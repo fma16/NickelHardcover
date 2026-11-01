@@ -1,0 +1,12 @@
+*.so*
+*.o
+*.moc
+*.rcc
+*.log
+mise.local.toml
+cli/target
+KoboRoot.tgz
+files
+hook/res/*.png
+hook/src/messages.h
+.amp/portals/*

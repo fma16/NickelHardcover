@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo 'Preparing native Rust and Qt checks (not the Kobo cross-toolchain)'
+missing=()
+for package in build-essential pkg-config qtbase5-dev clang-format; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+    missing+=("$package")
+  fi
+done
+if ((${#missing[@]})); then
+  sudo apt-get update -qq
+  sudo apt-get install -y "${missing[@]}"
+fi
+
+if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+  installer=$(mktemp)
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$installer"
+  sh "$installer" -y --profile minimal --default-toolchain 1.99.1
+  rm "$installer"
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+git submodule update --init --recursive
+cargo +1.99.1 fetch --manifest-path cli/Cargo.toml --locked
+echo 'Native dependencies ready; use scripts/check to test without credentials'

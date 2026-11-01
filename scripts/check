@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Run from the repository root. No account credentials or Kobo are required.
+export VERSION="${VERSION:-readwise-dev}"
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo test --manifest-path cli/Cargo.toml --locked
+cargo fmt --manifest-path cli/Cargo.toml -- --check
+cargo run --quiet --manifest-path cli/qt_codegen/Cargo.toml -- cli/src/messages.rs > hook/src/messages.h
+
+test_binary=$(mktemp)
+trap 'rm -f "$test_binary"' EXIT
+g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
+  $(pkg-config --cflags Qt5Core) hook/src/readwisesessions.cc hook/tests/readwisesessions.cc \
+  $(pkg-config --libs Qt5Core) -o "$test_binary"
+"$test_binary"
+
+# Native Qt 5.15 deprecates QFlags(0) used by upstream for older Kobo Qt.
+# Keep that warning visible; all other warnings are errors.
+for source in hook/src/*.cc hook/src/*/*.cc; do
+  g++ -fsyntax-only -std=gnu++11 -fPIC -Wall -Wextra -Werror \
+    -Wno-error=deprecated-declarations -Wno-missing-field-initializers \
+    -DNH_VERSION=\""$VERSION"\" -Ihook/NickelHook -Ihook/qrcodegen/c \
+    $(pkg-config --cflags Qt5Widgets Qt5Network) "$source"
+done
+echo 'Native Qt source checks passed (not a Kobo ABI or visual test)'
