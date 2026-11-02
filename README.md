@@ -206,6 +206,18 @@ book is finished. Readwise keeps 99% without rounding, and its auto-sync remains
 independent. To mark a book as finished there manually, use Readwise Books or the
 **Read** menu option in Readwise-only mode.
 
+## File and cover safety limits
+
+ISBN lookup reads at most **8 MiB of decompressed data per EPUB entry** and
+**32 MiB in total**, including metadata. If a book exceeds these limits, link it
+manually; this does not modify the EPUB or affect reading it in Kobo.
+
+Covers support only JPEG/PNG over HTTPS on the explicit hosts listed in
+`hook/src/cover.cc`, including after redirects. Downloads are limited to 4 MiB,
+4,194,304 pixels (4,096 per side), three redirects and 30 seconds in total.
+An unsupported cover stays blank; the book remains selectable. Cookies and API
+credentials are not sent to cover servers.
+
 ## Frequently asked questions and troubleshooting
 
 **Why am I being offered Hardcover sign-in?**
