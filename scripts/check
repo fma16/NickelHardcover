@@ -14,6 +14,11 @@ g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
   $(pkg-config --libs Qt5Core) -o "$test_binary"
 "$test_binary"
 
+g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
+  $(pkg-config --cflags Qt5Widgets Qt5Network) hook/src/cover.cc hook/tests/cover.cc \
+  $(pkg-config --libs Qt5Widgets Qt5Network) -o "$test_binary"
+QT_QPA_PLATFORM=offscreen "$test_binary"
+
 # Native Qt 5.15 deprecates QFlags(0) used by upstream for older Kobo Qt.
 # Keep that warning visible; all other warnings are errors.
 for source in hook/src/*.cc hook/src/*/*.cc; do

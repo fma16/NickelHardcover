@@ -24,8 +24,6 @@ private:
   QString id;
   QLabel *cover = nullptr;
 
-  void loadCover();
-
   QLabel *buildCover(const SearchResult &result);
   QString getSeries(const SearchResult &result);
   QString getMeta(const SearchResult &result);

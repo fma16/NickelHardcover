@@ -1,10 +1,10 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QNetworkReply>
 
 #include <NickelHook.h>
 
+#include "../cover.h"
 #include "../files.h"
 #include "../nickelhardcover.h"
 #include "../settings.h"
@@ -118,10 +118,7 @@ QLabel *BookRow::buildCover(const SearchResult &result) {
   label->setScaledContents(true);
 
   if (result.image) {
-    label->setPixmap(QPixmap(Files::loading_cover));
-
-    QNetworkReply *reply = SyncController::getInstance()->network->get(QNetworkRequest(QUrl(*result.image)));
-    QObject::connect(reply, &QNetworkReply::finished, this, &BookRow::loadCover);
+    loadCover(label, SyncController::getInstance()->network, QUrl(*result.image));
   } else {
     label->setProperty("blank", true);
   }
@@ -159,20 +156,4 @@ QString BookRow::getMeta(const SearchResult &result) {
   }
 
   return meta.join(" • ");
-}
-
-void BookRow::loadCover() {
-  QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
-
-  if (reply->error() == QNetworkReply::NoError) {
-    QPixmap pixmap;
-    pixmap.loadFromData(reply->readAll());
-    cover->setPixmap(pixmap);
-  } else {
-    nh_log("Error loading image %s", qPrintable(reply->errorString()));
-    cover->clear();
-    cover->setProperty("blank", true);
-  }
-
-  reply->deleteLater();
 }

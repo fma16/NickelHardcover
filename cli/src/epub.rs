@@ -2,13 +2,34 @@ use std::io::prelude::*;
 use std::sync::LazyLock;
 use std::{fs::File, path::Path};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use regex::Regex;
 use zip::ZipArchive;
 
 use crate::isbn::normalize_isbn;
+
+// Bound actual decompressed bytes, not just the ZIP's attacker-controlled sizes.
+const MAX_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+
+fn read_entry(entry: zip::read::ZipFile<'_, File>, buf: &mut String, remaining: &mut u64) -> Result<()> {
+  let limit = MAX_ENTRY_BYTES.min(*remaining);
+  ensure!(
+    entry.size() <= limit,
+    "EPUB decompression limit exceeded; link the book manually"
+  );
+  buf.clear();
+  entry.take(limit + 1).read_to_string(buf)?;
+  let size = buf.len() as u64;
+  ensure!(
+    size <= limit,
+    "EPUB decompression limit exceeded; link the book manually"
+  );
+  *remaining -= size;
+  Ok(())
+}
 
 fn get_opf_path(manifest: &str) -> Result<String> {
   let mut reader = Reader::from_str(manifest);
@@ -192,19 +213,25 @@ pub fn read_epub_isbn(content_id: &str) -> Result<Vec<String>> {
   let mut archive = ZipArchive::new(file).context("Failed to parse file as archive")?;
 
   let mut buf = String::new();
-  archive
-    .by_name("META-INF/container.xml")
-    .context("Failed to open container manifest")?
-    .read_to_string(&mut buf)
-    .context("Failed to read container manifest")?;
+  let mut remaining = MAX_TOTAL_BYTES;
+  read_entry(
+    archive
+      .by_name("META-INF/container.xml")
+      .context("Failed to open container manifest")?,
+    &mut buf,
+    &mut remaining,
+  )
+  .context("Failed to read container manifest")?;
   let opf_path = get_opf_path(&buf)?;
 
-  buf.clear();
-  archive
-    .by_name(&opf_path)
-    .context(format!("Failed to open OEBPS root file <i>{opf_path}</i>"))?
-    .read_to_string(&mut buf)
-    .context("Failed to read OEBPS root file")?;
+  read_entry(
+    archive
+      .by_name(&opf_path)
+      .context(format!("Failed to open OEBPS root file <i>{opf_path}</i>"))?,
+    &mut buf,
+    &mut remaining,
+  )
+  .context("Failed to read OEBPS root file")?;
 
   let (mut isbn, items) = read_opf(&buf)?;
 
@@ -220,12 +247,14 @@ pub fn read_epub_isbn(content_id: &str) -> Result<Vec<String>> {
         n - 3
       };
 
-      buf.clear();
-      archive
-        .by_path(opf_dir.join(&items[i]))
-        .context(format!("Failed to open OEBPS root file <i>{}</i>", items[i]))?
-        .read_to_string(&mut buf)
-        .context("Failed to read OEBPS root file")?;
+      read_entry(
+        archive
+          .by_path(opf_dir.join(&items[i]))
+          .context(format!("Failed to open OEBPS root file <i>{}</i>", items[i]))?,
+        &mut buf,
+        &mut remaining,
+      )
+      .context("Failed to read OEBPS root file")?;
       isbn = read_item(&buf)?;
 
       if !isbn.is_empty() {
@@ -447,5 +476,87 @@ mod tests {
     let file = TempFile::new(&bytes);
 
     assert!(read_epub_isbn(&file.content_id()).is_err());
+  }
+
+  #[test]
+  fn epub_decompression_limits_include_metadata_and_chapters() {
+    let opf = "<package><manifest><item href='chapter.xhtml' media-type='application/xhtml+xml'/></manifest></package>";
+    let chapter = "<html><body>9780306406157</body></html>";
+    for (name, contents) in [
+      ("META-INF/container.xml", "<container/>"),
+      ("content.opf", opf),
+      ("chapter.xhtml", chapter),
+    ] {
+      let oversized = format!("{contents}{}", " ".repeat(8 * 1024 * 1024 + 1 - contents.len()));
+      let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+      for (entry, body) in [
+        (
+          "META-INF/container.xml",
+          "<container><rootfile full-path='content.opf' media-type='application/oebps-package+xml'/></container>",
+        ),
+        ("content.opf", opf),
+        ("chapter.xhtml", chapter),
+      ] {
+        writer.start_file(entry, SimpleFileOptions::default()).unwrap();
+        writer
+          .write_all(if entry == name {
+            oversized.as_bytes()
+          } else {
+            body.as_bytes()
+          })
+          .unwrap();
+      }
+      let mut bytes = writer.finish().unwrap().into_inner();
+      let file = TempFile::new(&bytes);
+      let error = read_epub_isbn(&file.content_id()).unwrap_err();
+      assert!(
+        format!("{error:#}").contains("EPUB decompression limit"),
+        "{name}: {error:#}"
+      );
+      // A forged small uncompressed size must not bypass the actual read cap.
+      let headers: Vec<_> = bytes
+        .windows(4)
+        .enumerate()
+        .filter_map(|(i, signature)| {
+          match signature {
+            b"PK\x03\x04" => Some(i + 22), // local uncompressed size
+            b"PK\x01\x02" => Some(i + 24), // central-directory uncompressed size
+            _ => None,
+          }
+        })
+        .collect();
+      for offset in headers {
+        bytes[offset..offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+      }
+      let file = TempFile::new(&bytes);
+      let error = read_epub_isbn(&file.content_id()).unwrap_err();
+      assert!(
+        format!("{error:#}").contains("EPUB decompression limit"),
+        "forged {name}: {error:#}"
+      );
+    }
+
+    // A normal chapter exactly at the per-entry boundary still works.
+    let boundary = format!("{chapter}{}", " ".repeat(8 * 1024 * 1024 - chapter.len()));
+    let file = TempFile::new(&build_epub("content.opf", opf, &[("chapter.xhtml", &boundary)]));
+    assert_eq!(
+      read_epub_isbn(&file.content_id()).unwrap(),
+      ["0306406152", "9780306406157"]
+    );
+  }
+
+  #[test]
+  fn epub_decompression_has_a_cumulative_budget() {
+    let mut opf = "<package><manifest>".to_string();
+    let names: Vec<_> = (0..5).map(|i| format!("chapter-{i}.xhtml")).collect();
+    for name in &names {
+      opf.push_str(&format!("<item href='{name}' media-type='application/xhtml+xml'/>"));
+    }
+    opf.push_str("</manifest></package>");
+    let chapter = format!("<html><body>{}</body></html>", "a".repeat(7 * 1024 * 1024));
+    let items: Vec<_> = names.iter().map(|name| (name.as_str(), chapter.as_str())).collect();
+    let file = TempFile::new(&build_epub("content.opf", &opf, &items));
+    let error = read_epub_isbn(&file.content_id()).unwrap_err();
+    assert!(format!("{error:#}").contains("EPUB decompression limit"), "{error:#}");
   }
 }

@@ -123,6 +123,18 @@ précédent, sauvegarder puis retirer sa file et `readwise.sqlite`, et effacer s
 associations `readwise/` dans `library.ini`. Changer simplement le jeton n'effectue
 pas une migration de compte.
 
+## Limites de lecture des fichiers et couvertures
+
+La recherche d'ISBN lit au maximum **8 Mio décompressés par entrée EPUB** et
+**32 Mio au total**, métadonnées comprises. Au-delà, associer le livre manuellement ;
+cela ne modifie pas le fichier EPUB ni sa lecture dans Kobo.
+
+Les couvertures acceptent seulement JPEG/PNG via HTTPS sur les domaines explicitement
+autorisés dans `hook/src/cover.cc`, y compris après redirection. Le chargement est limité
+à 4 Mio, 4 194 304 pixels (4 096 par côté), trois redirections et 30 secondes au total.
+Une couverture non prise en charge reste vide ; le livre reste sélectionnable.
+Les cookies et identifiants d'API ne sont pas transmis aux serveurs de couvertures.
+
 ## Développement et vérifications
 
 Depuis la racine, `.agents/setup` installe Rust et Qt pour les tests natifs Linux,

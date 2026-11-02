@@ -23,7 +23,9 @@ sfparse = "0.1.1"
 strum = "0.28.0"
 strum_macros = "0.28.0"
 thiserror = "2.0.20"
-zip = "8.6.0"
+# EPUB OCF permits only Stored/Deflate. Other codecs can allocate large decoder
+# windows before a bounded read produces even one byte.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dependencies.jiff]
 version = "0.2.35"

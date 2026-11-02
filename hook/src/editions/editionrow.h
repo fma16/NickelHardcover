@@ -29,7 +29,5 @@ private:
   QString id;
   QLabel *cover = nullptr;
 
-  void loadCover();
-
   QLabel *buildCover(const Edition &edition);
 };
