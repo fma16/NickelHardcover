@@ -1,5 +1,5 @@
-#include <QSettings>
 #include <QFile>
+#include <QSettings>
 
 #include <NickelHook.h>
 
@@ -26,25 +26,26 @@ void Settings::currentViewChanged(const QString &name) {
   }
 }
 
-QString Settings::getPath(QString contentId, const QString &key) const {
-  return (isReadwise() ? "readwise/" : "") + contentId.replace('/', '-').replace('\\', '-') + "/" + key;
+QString Settings::getPath(QString contentId, const QString &key, bool readwise) const {
+  return (readwise ? "readwise/" : "") + contentId.replace('/', '-').replace('\\', '-') + "/" + key;
 }
 
-void Settings::setValue(const QString &contentId, const QString &key, const QVariant &value) {
+void Settings::setValue(const QString &contentId, const QString &key, const QVariant &value, bool readwise) {
   if (value.isNull()) {
-    library->remove(getPath(contentId, key));
+    library->remove(getPath(contentId, key, readwise));
   } else {
-    library->setValue(getPath(contentId, key), value);
+    library->setValue(getPath(contentId, key, readwise), value);
   }
 }
 
-QVariant Settings::getValue(const QString &contentId, const QString &key, const QVariant &defaultValue) const {
-  return library->value(getPath(contentId, key), defaultValue);
+QVariant Settings::getValue(const QString &contentId, const QString &key, bool readwise,
+                            const QVariant &defaultValue) const {
+  return library->value(getPath(contentId, key, readwise), defaultValue);
 }
 
-bool Settings::isEnabled(const QString &contentId) const {
+bool Settings::isEnabled(const QString &contentId, bool readwise) const {
   bool defaultValue = config->value("auto_sync_default", false).toBool();
-  return getValue(contentId, "enabled", defaultValue).toBool();
+  return getValue(contentId, "enabled", readwise, defaultValue).toBool();
 }
 
 void Settings::setDebug(bool value) {

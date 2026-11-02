@@ -88,8 +88,8 @@ fn main() {
       .command
       .expect("A subcommands must be present. Run with --help for more information.");
     anyhow::ensure!(
-      matches!(context.config.provider.as_str(), "hardcover" | "readwise"),
-      ExpectedError::InvalidConfig("provider must be hardcover or readwise".into())
+      matches!(context.config.provider.as_str(), "hardcover" | "readwise" | "dual"),
+      ExpectedError::InvalidConfig("provider must be hardcover, readwise or dual".into())
     );
     if context.config.provider == "readwise" {
       anyhow::ensure!(

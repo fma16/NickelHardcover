@@ -6,6 +6,7 @@
 
 #include "../cli.h"
 #include "../settings.h"
+#include "../signin/signindialog.h"
 #include "../synccontroller.h"
 #include "../widgets/label.h"
 #include "checkboxrow.h"
@@ -206,10 +207,28 @@ QFrame *SettingsDialog::buildGeneral() {
   QObject::connect(username, &MenuRow::triggered, this, &SettingsDialog::signOut);
   layout->addWidget(username);
 
-  CLI *cli = CLI::getUser(true);
-  QObject::connect(cli, &CLI::response, this, &SettingsDialog::setUsername);
-
   Settings *settings = Settings::getInstance();
+  if (settings->isSignedIn()) {
+    CLI *cli = CLI::getUser(true);
+    QObject::connect(cli, &CLI::response, this, &SettingsDialog::setUsername);
+  } else {
+    username->setHeading(settings->serviceName() + ": signed out");
+  }
+
+  if (settings->isDual()) {
+    bool signedIn = settings->isSignedIn(true);
+    MenuRow *readwise = new MenuRow(signedIn ? "Readwise Books: token configured" : "Readwise Books: signed out",
+                                    MenuRowType::Tap, {{signedIn ? "Sign out" : "Sign in", true}}, {}, true);
+    QObject::connect(readwise, &MenuRow::triggered, this, [this, settings, signedIn]() {
+      if (signedIn) {
+        settings->clearAccessToken(true);
+        closeDialog();
+      } else {
+        SignInDialog::show(true);
+      }
+    });
+    layout->addWidget(readwise);
+  }
 
   CheckboxRow *checkboxRow =
       new CheckboxRow("Enable auto-sync by default for new books", settings->getAutoSyncDefault());

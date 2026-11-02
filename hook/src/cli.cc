@@ -82,9 +82,13 @@ CLI *CLI::search(const QString &query, int limit, int page) {
   return new CLI({"search", "--limit", QString::number(limit), "--page", QString::number(page), "--query", query});
 }
 
-CLI *CLI::update(const QString &contentId, int percentage, bool silent) {
-  QStringList arguments = {"update", "--value", QString::number(percentage)};
-  arguments.append(getIdentifier(contentId));
+CLI *CLI::update(const QString &contentId, int percentage, bool silent, bool readwise) {
+  QStringList arguments = {
+      "update",       "--service", readwise ? "readwise" : "hardcover", "--value", QString::number(percentage),
+      "--content-id", contentId};
+  QString linkedId = Settings::getInstance()->getLinkedId(contentId, readwise);
+  if (!linkedId.isEmpty())
+    arguments.append({"--linked-id", linkedId});
 
   return new CLI(arguments, silent, true, contentId);
 }
@@ -105,6 +109,9 @@ CLI::CLI(QStringList arguments, bool silent, bool icon, const QString &contentId
     : QObject(parent), arguments(arguments),
       contentId(contentId.isEmpty() ? SyncController::getInstance()->contentId : contentId), silent(silent),
       iconEnabled(icon) {
+  int serviceIndex = arguments.indexOf("--service");
+  readwise =
+      serviceIndex >= 0 ? arguments.value(serviceIndex + 1) == "readwise" : Settings::getInstance()->isReadwise();
   WirelessWorkflowManager *wfm = WirelessWorkflowManager__sharedInstance();
 
   if (WirelessWorkflowManager__isInternetAccessible(wfm)) {
@@ -157,6 +164,9 @@ void CLI::checkConnected() {
 }
 
 void CLI::connectingFailed() {
+  if (networkFinished)
+    return;
+  networkFinished = true;
   nh_log("CLI::connectingFailed()");
 
   if (!silent) {
@@ -189,6 +199,9 @@ void CLI::showIcon(const char *path) {
 }
 
 void CLI::networkConnected() {
+  if (networkFinished)
+    return;
+  networkFinished = true;
   nh_log("CLI::networkConnected()");
 
   WirelessManager *wm = WirelessManager__sharedInstance();
@@ -230,8 +243,9 @@ void CLI::processFinished(int exitCode) {
 
     case Messages::Kind::Error:
       if (msg.error->error_code == "Unauthorized") {
-        SignInDialog::show();
+        SignInDialog::show(readwise);
         failure(FailureReason::Unauthorized);
+        deleteLater();
         return;
       } else if (msg.error->error_code == "InvalidConfig") {
         QString message = msg.error->message;

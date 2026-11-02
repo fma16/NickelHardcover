@@ -14,6 +14,8 @@ g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
   $(pkg-config --libs Qt5Core) -o "$test_binary"
 "$test_binary"
 
+bash scripts/check-dual-sync
+
 g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
   $(pkg-config --cflags Qt5Widgets Qt5Network) hook/src/cover.cc hook/tests/cover.cc \
   $(pkg-config --libs Qt5Widgets Qt5Network) -o "$test_binary"

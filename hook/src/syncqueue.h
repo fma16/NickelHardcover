@@ -12,7 +12,11 @@ class SyncQueue : public QObject {
   Q_OBJECT
 
 public:
-  SyncQueue(QObject *parent = nullptr);
+  SyncQueue(bool readwise, QObject *parent = nullptr);
+
+  const bool readwise;
+  bool available() const;
+  bool enabled(const QString &contentId) const;
 
   const QHash<QString, int> &getProgress() const { return progress; }
 

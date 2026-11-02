@@ -1,57 +1,106 @@
-# Bookwise Nickel — Readwise Books sur Kobo
+# Bookwise Nickel — Hardcover and Readwise Books on Kobo
 
-Adaptation de [NickelHardcover](https://codeberg.org/StrayRose/NickelHardcover),
-basée sur la révision `a176fd52510a6920e18014f8d54564a5c8d77e03` (licence MIT,
-copyright Ava Johnson conservé dans `LICENSE`). Elle réutilise le plugin natif
-Nickel/Qt, la CLI Rust et l'extraction ISBN de l'amont, et ajoute un fournisseur
-**Readwise Books indépendant de Hardcover**.
+> **This repository is a fork of [StrayRose's NickelHardcover](https://codeberg.org/StrayRose/NickelHardcover).**
+> It adds Readwise Books while preserving the original project's Hardcover features.
 
-**Version expérimentale. Firmware Kobo 5.x non pris en charge.** La compilation
-et les tests locaux ne remplacent pas une validation sur une vraie liseuse.
-Les captures du dossier `screenshots/` proviennent de l'amont Hardcover et ne
-constituent pas des captures de cette intégration.
+Keep using **Hardcover** and send your new reading sessions to **Readwise Books**,
+directly from your Kobo's reading menu. You can sync both services together or use
+either service on its own.
 
-## Fonctionnalités Readwise Books
+**Experimental release. Kobo firmware 5.x is not supported.**
+Back up your data before installing. NickelMenu is not required.
 
-- Sessions horodatées depuis l'ouverture de la vue de lecture jusqu'à sa sortie,
-  la mise en veille, un changement de livre ou une synchronisation.
-- Progression ebook convertie de 0–100 vers 0–1, sans inventer de durée entre deux
-  connexions Wi-Fi. Les périodes hors de la vue de lecture sont exclues.
-- File persistante sur la Kobo pour les sessions terminées hors ligne ; envoi
-  manuel, selon les seuils/horaires configurés, ou à la reconnexion Wi-Fi.
-- Identification par ISBN/ASIN, sinon titre et auteur ; association manuelle
-  à un livre **déjà présent dans la bibliothèque Readwise Books**.
-- Statuts « à lire », « en cours », « terminé », « abandonné », notes et critiques.
-- Publication dans le fil Readwise Books activée par défaut
-  (`readwise_publish_to_feed = true`). Définir ce réglage à `false` pour ne pas
-  publier les sessions dans le fil ; elles comptent toujours dans les statistiques
-  et les classements Readwise. Un `false` explicite dans une configuration existante
-  reste respecté, et les sessions déjà en attente conservent leur choix de publication.
+## What you can do
 
-La documentation de référence est <https://readwise.io/books_api>, API v1
-expérimentale consultée le 1er novembre 2026. **Elle n'expose pas de création de
-surlignages/notes, de journal Hardcover, de recherche globale de catalogue ou de
-statut « en pause »** : les commandes correspondantes ne sont pas proposées en
-mode Readwise. Ce projet n'utilise ni Reader ni l'API classique des surlignages.
-Le mode Hardcover reste disponible avec `provider = hardcover` (valeur par défaut).
+- Keep Hardcover's reading progress, statuses, ratings/reviews, annotations and
+  reading journal, along with its QR code/OAuth sign-in.
+- Send the progress and duration of your new reading sessions to Readwise Books.
+- Sync on demand, automatically while reading, or when closing a book, including
+  when putting your Kobo to sleep.
+- Read offline with auto-sync enabled: completed sessions are saved on your Kobo
+  for later upload.
+- Keep accounts and book links separate: a failure in one service does not undo
+  a successful sync with the other.
+- In Readwise-only mode, link a book to your Readwise Books library, change its
+  status, give it a star rating and write a review.
 
-## Configuration sur la liseuse
+**The Readwise integration uses Books, not Reader or the highlights API.**
+The journal, annotations and “Paused” status remain available with Hardcover,
+including in dual-sync mode; they are not sent to Readwise.
 
-L'installation utilise les mêmes chemins que NickelHardcover et le remplace :
-ne pas installer les deux plugins simultanément. Sauvegarder d'abord la base Kobo
-et `.adds/NickelHardcover/`. Les releases de NickelHardcover ne contiennent pas
-cette adaptation ; compiler ce dépôt pour obtenir son `KoboRoot.tgz`.
+## Installing or updating
 
-1. Copier le `KoboRoot.tgz` de cette version dans `.kobo/`, éjecter la Kobo et
-   attendre son redémarrage.
-2. Obtenir un **jeton personnel** sur <https://readwise.io/access_token>, avec un
-   compte ayant accès à Readwise Books. Ne pas le partager dans un ticket ou un chat.
-3. Par USB, créer/éditer `.adds/NickelHardcover/config.ini` en conservant les autres
-   réglages éventuels :
+### Before you start
+
+You need a compatible Kobo, a USB cable, a computer and an account for each service
+you use (with access to Readwise Books if you use Readwise). Your Kobo needs Wi-Fi
+to send data, but not to read offline.
+
+The original project excludes the **Kobo Mini (2012)**. This fork has been tried
+on firmware **4.46.23852** in Readwise-only mode. Dual sync and offline recovery
+still need on-device validation; local tests and ARM builds do not guarantee
+compatibility with every model.
+
+You also need a **`KoboRoot.tgz` built from this fork**. Downloads from the original
+NickelHardcover project **do not include Readwise**. If you do not have this archive,
+have it built from this repository or follow the developer-oriented
+[build instructions](AGENTS.md#compilation-pour-kobo). No public download link for
+this fork is provided here.
+
+### Installing over USB
+
+1. Connect your Kobo to your computer and accept the USB connection on the device.
+2. Show hidden files so you can see the `.kobo` and `.adds` folders.
+   On macOS: **Cmd + Shift + .**; on Windows: enable **Hidden items** in File
+   Explorer; on Linux: usually **Ctrl + H**.
+3. Back up `.kobo/KoboReader.sqlite` and the `.adds/NickelHardcover/` folder, if it
+   already exists, to your computer.
+4. Copy **`KoboRoot.tgz` without extracting it** into your Kobo's `.kobo/` folder.
+5. Safely eject your Kobo, unplug it and wait for it to restart.
+
+To update, follow the same steps: **there is no need to uninstall**, and your
+configuration is preserved. This fork uses the same folders as NickelHardcover
+and replaces it; do not install both plugins at the same time.
+
+## Connecting Hardcover and Readwise Books
+
+The `provider` setting in `.adds/NickelHardcover/config.ini` determines which
+services are used:
+
+| Value | Behavior |
+| --- | --- |
+| `dual` | Hardcover **and** new Readwise Books sessions |
+| `hardcover` | Hardcover only; the default |
+| `readwise` | Readwise Books only |
+
+Switching modes does not delete tokens or book links. Close and reopen your book
+after each change.
+
+### Keeping or connecting your Hardcover account
+
+If NickelHardcover was already connected, **keep your existing settings**,
+especially `access_token`, `refresh_token` and `token_expires_at`: you do not need
+to sign in again.
+
+Otherwise, once `provider = dual` or `provider = hardcover` is configured, open
+the reading menu and choose **Sign in to Hardcover.app**. Scan the QR code (or
+open the link and enter the code), then tap **Continue**. This sign-in flow remains
+available even if Readwise is already connected.
+
+### Adding Readwise Books and enabling dual sync
+
+Readwise sign-in is configured over USB, **not yet through a QR code**.
+
+1. On your computer, sign in to Readwise and open
+   <https://readwise.io/access_token> to get your **personal token**.
+2. Connect your Kobo over USB again. Open `.adds/NickelHardcover/config.ini` in a
+   text editor, or create it if it does not exist. Do not name it `config.ini.txt`.
+3. Add or replace the settings below without deleting other existing settings
+   or creating duplicate entries. Replace `YOUR_PERSONAL_TOKEN` with your token:
 
    ```ini
-   provider = readwise
-   readwise_token = VOTRE_JETON_PERSONNEL
+   provider = dual
+   readwise_token = YOUR_PERSONAL_TOKEN
    readwise_publish_to_feed = true
    auto_sync_default = false
    retry_on_network = true
@@ -60,117 +109,172 @@ cette adaptation ; compiler ce dépôt pour obtenir son `KoboRoot.tgz`.
    sync_on_schedule = -1
    ```
 
-4. Éjecter la liseuse et rouvrir le livre. Le jeton n'est jamais passé en argument
-   de processus ; il reste en clair dans ce fichier privé sur le stockage Kobo.
-5. Activer **Enable auto-sync** pour le livre, ou lire quelques pages puis choisir
-   **Sync now** dans le menu ajouté à la barre de lecture. Une synchronisation
-   manuelle envoie aussi les sessions en attente des autres livres.
+4. Safely eject and unplug your Kobo, then close and reopen your book to load
+   these settings.
 
-Une association manuelle utilise l'identifiant **du livre de votre bibliothèque**,
-pas l'identifiant du produit du catalogue. Les associations et pourcentages locaux
-Hardcover/Readwise sont séparés. Après avoir changé une association, fermer puis
-rouvrir le livre. Si aucun ISBN n'est disponible, une première synchronisation
-avec titre/auteur crée le livre avant de pouvoir le noter.
+If you only want Readwise, use `provider = readwise` instead. A missing token only
+prevents uploads to its own service. In **Settings**, signing out of the main
+account signs out of Hardcover in dual-sync mode; the **Readwise Books** row lets
+you sign out of Readwise separately.
 
-Avant l'envoi d'une session, le plugin obtient le `book_id` par `POST /books`
-avec `status: currently_reading`. Si l'identifiant est déjà connu, il vérifie le
-livre par `GET /books?ids=…` au lieu de le recréer. Si cette vérification échoue,
-la session reste en attente et n'est pas envoyée.
+**Privacy:** the token is stored in plain text in this file on your Kobo. Do not
+share the file or your token in an issue, screenshot or chat. Sessions are
+**published to the Readwise Books feed by default**. To keep them out of the feed,
+change `readwise_publish_to_feed = true` to `false` before reading. They will still
+count towards Readwise statistics and leaderboards. This change does not affect
+sessions already waiting to be uploaded.
 
-La lecture reprend après chaque intervalle envoyé. Les intervalles sans avancée
-de pourcentage sont ignorés (y compris un retour en arrière) ; la résolution est
-celle du pourcentage entier fourni par Kobo. La version ne devine pas si vous
-lisez lorsque la vue reste ouverte sans action, ni si un saut de pages correspond
-à une vraie lecture. Elle ne transforme pas 99 % en 100 % : si Kobo s'arrête à
-99 %, utiliser le menu de statut pour marquer le livre terminé.
+## Using the reading menu
 
-Les sessions terminées survivent aux redémarrages, mais une interruption brutale
-avant leur fermeture peut perdre l'intervalle actif. Le fuseau du profil Readwise
-est utilisé ; les instants envoyés sont en UTC. Les évaluations du widget amont
-sont par demi-étoile ; la CLI accepte également les quarts d'étoile de l'API.
+Open a book, tap the screen to show the reading toolbar, then open the added menu
+**at the top right**. The plugin's menu labels are in English.
 
-## Reprises et erreurs : ne pas créer de doublons
+### Sending your first session
 
-Readwise **ne déduplique pas `POST /sessions`**. Le plugin ne promet donc pas une
-livraison « exactement une fois » en cas de panne réseau. Il privilégie l'absence
-de doublons et conserve les cas à vérifier dans
-`.adds/NickelHardcover/readwise-sessions/` :
+1. Enable Wi-Fi on your Kobo.
+2. Read until the progress percentage increases.
+3. Without leaving the book, open the menu and choose **Sync now (both services)**
+   when both accounts are configured, or **Sync now** in single-service mode.
+4. Check the progress in Hardcover and the session on the correct book in Readwise
+   Books, depending on which services you use. Hardcover requires at least 2%
+   progress; Readwise can record a session from 0% to 1%.
 
-| Extension | Signification | Action |
-| --- | --- | --- |
-| `.json` | Session non envoyée ou refusée explicitement (401/403/429) | Corriger le jeton/l'accès, attendre `Retry-After`, puis synchroniser |
-| `.sending` | Envoi commencé, résultat incertain ou processus interrompu | Vérifier d'abord dans Readwise ; aucune relance automatique |
-| `.sent` | Session acceptée, statut du livre restant à mettre à jour | Synchroniser ; seul le PATCH du livre est rejoué |
-| `.failed` | Session explicitement rejetée, même si HTTP 200 | Corriger le problème avant de la remettre en `.json` |
+A manual sync also sends saved Readwise sessions waiting to be uploaded for other
+books. If you only sync manually, use **Sync now before closing the book or putting
+your Kobo to sleep**: saving sessions automatically when you close a book requires
+**Readwise** auto-sync to be enabled for that book. Enabling only Hardcover
+auto-sync is not enough.
 
-Un fichier `.sending` ou `.failed` bloque les nouvelles sessions pour éviter de
-réappliquer une progression ancienne après une plus récente. Faire une copie des
-fichiers avant intervention et arrêter la synchronisation automatique :
+### Enabling automatic sync
 
-- Si une session `.sending` existe dans Readwise, la renommer en `.sent` (le fichier
-  contient son `book_id`). Si sa création n'a **certainement pas** eu lieu, la
-  renommer en `.json`. En cas de doute, ne pas la renvoyer.
-- Pour corriger l'association d'une session non envoyée, renseigner son
-  `linked_id` avec l'ID du livre Readwise approprié. Ne pas réaffecter une session
-  déjà acceptée à un autre livre.
-- Une création de livre au résultat incertain bloque également les créations
-  automatiques pour ce livre : le retrouver dans Readwise, l'associer manuellement
-  et lancer **Sync now**. Le cache `readwise.sqlite` mémorise aussi les livres sans
-  correspondance catalogue afin de ne pas les recréer à chaque synchronisation.
+In dual-sync mode, enable **Enable auto-sync (Hardcover)** and
+**Enable auto-sync (Readwise)** for the open book. These settings are independent
+and apply **per book**; the corresponding **Disable auto-sync** entries turn them
+off. In single-service mode, the entry is called **Enable auto-sync**.
 
-Avant de changer de **compte** Readwise, terminer/résoudre les envois du compte
-précédent, sauvegarder puis retirer sa file et `readwise.sqlite`, et effacer ses
-associations `readwise/` dans `library.ini`. Changer simplement le jeton n'effectue
-pas une migration de compte.
+With the configuration above, uploads are triggered when closing the book or
+putting the Kobo to sleep at a progress threshold of 1 percentage point, and while
+reading at a threshold of 20 percentage points. Retries when Wi-Fi reconnects are
+enabled; scheduled daily sync is disabled. The thresholds and schedule are shared,
+but evaluated separately against the progress already synced with each service.
 
-## Limites de lecture des fichiers et couvertures
+In **Settings**, you can change the thresholds, choose a daily sync time or enable
+**Enable auto-sync by default for new books**. Without Wi-Fi, completed and saved
+Readwise sessions remain queued, even after a restart; reconnect your Kobo and use
+**Sync now** if needed. Hardcover's retry queue stays in memory, as in the original
+project: it does not offer the same persistence across restarts.
 
-La recherche d'ISBN lit au maximum **8 Mio décompressés par entrée EPUB** et
-**32 Mio au total**, métadonnées comprises. Au-delà, associer le livre manuellement ;
-cela ne modifie pas le fichier EPUB ni sa lecture dans Kobo.
+### Linking the correct book
 
-Les couvertures acceptent seulement JPEG/PNG via HTTPS sur les domaines explicitement
-autorisés dans `hook/src/cover.cc`, y compris après redirection. Le chargement est limité
-à 4 Mio, 4 194 304 pixels (4 096 par côté), trois redirections et 30 secondes au total.
-Une couverture non prise en charge reste vide ; le livre reste sélectionnable.
-Les cookies et identifiants d'API ne sont pas transmis aux serveurs de couvertures.
+**In dual-sync mode, the book-linking menus apply to Hardcover.** Use
+**Manually link book** to search for and select the Hardcover book or edition.
+An existing Readwise link is still used and is never replaced by the Hardcover ID.
 
-## Développement et vérifications
+For Readwise, the plugin tries to identify the book by its ISBN/ASIN, falling back
+to its title and author. If the result is not right:
 
-Depuis la racine, `.agents/setup` installe Rust et Qt pour les tests natifs Linux,
-sans compte Readwise et sans liseuse. `scripts/check` exécute les tests Rust,
-les tests de capture Qt et la vérification de compilation des sources C++.
-Ces tests utilisent un serveur HTTP local qui simule le contrat documenté, pas le
-service Readwise réel. Le rendu des écrans et les hooks Kobo nécessitent `libnickel`
-et une vraie liseuse compatible ; aucun navigateur ne peut les reproduire.
+1. Make sure the book you want is already in your Readwise Books library.
+   In dual-sync mode, temporarily switch to `provider = readwise` over USB, then
+   close and reopen your book to access Readwise search.
+2. Choose **Manually link book**, search for the book and select it. Search covers
+   your library, not the entire Readwise catalog.
+3. If you changed modes, restore `provider = dual` over USB. Close and reopen the
+   book on your Kobo to apply the link and mode.
 
-Pour compiler l'archive ARM, utiliser la toolchain
-[NickelTC](https://github.com/pgaskin/NickelTC), les sous-modules épinglés et les
-tâches `mise.toml`. Le Dockerfile fournit Rust, mise et resvg dans cette toolchain :
+If a link already exists, use **Unlink book** before choosing another one. Without
+an ISBN, an initial sync using the title and author may be needed before you can
+rate the book.
 
-```sh
-git submodule update --init --recursive
-docker build -t bookwise-nickeltc .
-docker run --rm -v "$PWD:$PWD" -w "$PWD" -u "$(id -u):$(id -g)" \
-  bookwise-nickeltc mise run build::package
-```
+Sessions that have already been saved keep their existing link. To correct a
+session that has not been sent, follow the
+[advanced procedure](AGENTS.md#recuperation-des-sessions-readwise) rather than
+resending it without checking.
 
-Ne pas installer un binaire Linux x86 sur Kobo. Avant toute utilisation régulière,
-vérifier sur appareil : ouverture/fermeture, veille/réveil, changement de livre,
-reconnexion Wi-Fi, progression réelle et absence de doublons côté Readwise.
-Pour désinstaller, sauvegarder les sessions à conserver, retirer
-`.adds/NickelHardcover/` puis redémarrer manuellement la Kobo.
+### Updating a status or writing a review
+
+- **Update book status**: choose **Want to Read**, **Currently Reading**, **Read**,
+  **Did Not Finish**, or **Paused** with Hardcover.
+- **Write a review**: give the book a star rating and write your review.
+
+In dual-sync mode, these actions apply to **Hardcover only**, as do
+**Open reading journal** and **All annotations**. Reviews and statuses entered
+here are not copied to Readwise. Hardcover journal options and annotation sync
+remain available in **Settings**.
+
+Hardcover keeps its rounding from 99% to 100% and disables its auto-sync when the
+book is finished. Readwise keeps 99% without rounding, and its auto-sync remains
+independent. To mark a book as finished there manually, use Readwise Books or the
+**Read** menu option in Readwise-only mode.
+
+## Frequently asked questions and troubleshooting
+
+**Why am I being offered Hardcover sign-in?**
+
+Hardcover is still the default mode, and its sign-in is also offered in dual-sync
+mode if it is missing. To use both services, keep `provider = dual` and configure
+both accounts. Choose `provider = readwise` only if you want Readwise alone, then
+close and reopen the book.
+
+**Why is no session appearing?**
+
+Check Wi-Fi, your token and your account's access to Readwise Books. A session is
+only saved if the progress percentage increased: a few pages may not be enough.
+When syncing manually, sync before leaving the book; when syncing automatically,
+check that **Readwise** auto-sync is enabled for that book. Dual-sync mode sends
+new sessions: it does not reconstruct your history from Hardcover.
+
+**Does the duration exactly match my reading time?**
+
+It measures time spent in the reading view, excluding sleep and other screens.
+Leaving a book open without reading or skipping pages can distort the measurement.
+Completed sessions are saved, but an abrupt shutdown can lose the active session.
+
+**A message asks me to check a pending session. What should I do?**
+
+After a network interruption, the plugin may not know whether Readwise received
+the session. It then blocks new **Readwise** uploads, without blocking Hardcover,
+to prevent duplicates. **Do not delete the queue or blindly force a resend.**
+Check Readwise first, back up `.adds/NickelHardcover/`, then see the
+[advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
+
+**Can I switch Readwise accounts?**
+
+Not by simply replacing the token: sessions from the old account could be sent to
+the new one. Follow the [account-switching procedure](AGENTS.md#changer-de-compte-readwise).
+
+**Can I go back to using just one service?**
+
+Yes. Set `provider = hardcover` or `provider = readwise` in `config.ini`, then close
+and reopen the book. The other service's tokens and book links are kept, but it
+stops syncing. Any pending Readwise sessions remain on your Kobo; they are neither
+deleted nor transferred to Hardcover.
+
+## Uninstalling
+
+1. Sync any sessions you want to keep and back up `.adds/NickelHardcover/`.
+2. Delete that folder from your Kobo over USB.
+3. Safely eject your Kobo and restart it manually.
+
+## Credits and development
+
+Thanks to StrayRose for [NickelHardcover](https://codeberg.org/StrayRose/NickelHardcover)
+and to pgaskin for [NickelHook](https://github.com/pgaskin/NickelHook) and
+[NickelTC](https://github.com/pgaskin/NickelTC). The project is distributed under the
+[MIT license](LICENSE), with the original copyright preserved.
+
+The images in `screenshots/` come from the original Hardcover project: they do not
+show the Readwise integration. Build instructions, tests, architecture and technical
+precautions are documented in [AGENTS.md](AGENTS.md).
 
 ## TODO
 
-- [ ] Ajouter une connexion Readwise Books par QR code sur la Kobo : scanner
-  depuis son téléphone, se connecter et autoriser l'accès chez Readwise, puis
-  terminer la connexion sur la liseuse sans copier de jeton par USB.
-  - Vérifier les possibilités OAuth de [Readwise](https://readwise.io/books_api) :
-    Device Authorization Flow (non confirmé), redirections, PKCE et renouvellement
-    des jetons.
-  - Privilégier un Device Flow natif s'il est disponible ; sinon, évaluer un service
-    HTTPS d'appairage temporaire et ses contraintes d'hébergement et de sécurité.
-  - Gérer les jetons OAuth avec `Authorization: Bearer …`, l'expiration et les
-    erreurs d'autorisation ; conserver la configuration par jeton personnel.
-  - Valider le parcours complet sur une vraie Kobo et un téléphone.
+- [ ] Add Readwise Books sign-in via a QR code on the Kobo: scan it with a phone,
+  sign in and authorize access through Readwise, then finish signing in on the
+  e-reader without copying a token over USB.
+  - Check [Readwise's](https://readwise.io/books_api) OAuth capabilities: Device
+    Authorization Flow (unconfirmed), redirects, PKCE and token refresh.
+  - Prefer a native Device Flow if available; otherwise, evaluate a temporary
+    HTTPS pairing service and its hosting and security requirements.
+  - Handle OAuth tokens with `Authorization: Bearer …`, expiration and
+    authorization errors; keep personal-token configuration available.
+  - Validate the complete flow on a real Kobo and phone.

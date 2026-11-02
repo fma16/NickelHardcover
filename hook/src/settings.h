@@ -13,20 +13,41 @@ class Settings : public QObject {
 public:
   static Settings *getInstance();
 
-  void setEnabled(const QString &contentId, bool value) { setValue(contentId, "enabled", value); }
-  bool isEnabled(const QString &contentId) const;
+  void setEnabled(const QString &contentId, bool value) { setEnabled(contentId, value, isReadwise()); }
+  void setEnabled(const QString &contentId, bool value, bool readwise) {
+    setValue(contentId, "enabled", value, readwise);
+  }
+  bool isEnabled(const QString &contentId) const { return isEnabled(contentId, isReadwise()); }
+  bool isEnabled(const QString &contentId, bool readwise) const;
 
-  void setLinkedId(const QString &contentId, const QString &value) { setValue(contentId, "linkedbook", value); }
-  QString getLinkedId(const QString &contentId) const { return getValue(contentId, "linkedbook").toString(); }
+  void setLinkedId(const QString &contentId, const QString &value) {
+    setValue(contentId, "linkedbook", value, isReadwise());
+  }
+  QString getLinkedId(const QString &contentId) const { return getLinkedId(contentId, isReadwise()); }
+  QString getLinkedId(const QString &contentId, bool readwise) const {
+    return getValue(contentId, "linkedbook", readwise).toString();
+  }
 
-  void setLastProgress(const QString &contentId, int value) { setValue(contentId, "progress", value); }
-  int getLastProgress(const QString &contentId) const { return getValue(contentId, "progress").toInt(); }
+  void setLastProgress(const QString &contentId, int value, bool readwise) {
+    setValue(contentId, "progress", value, readwise);
+  }
+  int getLastProgress(const QString &contentId) const { return getLastProgress(contentId, isReadwise()); }
+  int getLastProgress(const QString &contentId, bool readwise) const {
+    return getValue(contentId, "progress", readwise).toInt();
+  }
 
+  // In dual mode the book-management UI retains the complete Hardcover feature set.
   bool isReadwise() const { return config->value("provider", "hardcover").toString() == "readwise"; }
+  bool isDual() const { return config->value("provider").toString() == "dual"; }
+  bool usesService(bool readwise) const { return isDual() || isReadwise() == readwise; }
   QString serviceName() const { return isReadwise() ? "Readwise Books" : "Hardcover.app"; }
   bool publishReadwiseSessions() const { return config->value("readwise_publish_to_feed", true).toBool(); }
-  void clearAccessToken() { config->setValue(isReadwise() ? "readwise_token" : "access_token", ""); }
-  bool isSignedIn() const { return !config->value(isReadwise() ? "readwise_token" : "access_token").toString().isEmpty(); }
+  void clearAccessToken() { clearAccessToken(isReadwise()); }
+  void clearAccessToken(bool readwise) { config->setValue(readwise ? "readwise_token" : "access_token", ""); }
+  bool isSignedIn() const { return isSignedIn(isReadwise()); }
+  bool isSignedIn(bool readwise) const {
+    return !config->value(readwise ? "readwise_token" : "access_token").toString().isEmpty();
+  }
 
   void setAutoSyncDefault(bool value) { config->setValue("auto_sync_default", value); }
   bool getAutoSyncDefault() const { return config->value("auto_sync_default", false).toBool(); }
@@ -54,7 +75,7 @@ public:
 
   bool is24HourClock() const { return kobo->value("ApplicationPreferences/is24HourClock").toBool(); }
 
-  void deleteConfig ();
+  void deleteConfig();
 
 private:
   Settings(QObject *parent = nullptr);
@@ -65,7 +86,8 @@ private:
   QSettings *config = nullptr;
   QSettings *kobo = nullptr;
 
-  QString getPath(QString contentId, const QString &key) const;
-  void setValue(const QString &contentId, const QString &key, const QVariant &value);
-  QVariant getValue(const QString &contentId, const QString &key, const QVariant &defaultValue = QVariant()) const;
+  QString getPath(QString contentId, const QString &key, bool readwise) const;
+  void setValue(const QString &contentId, const QString &key, const QVariant &value, bool readwise);
+  QVariant getValue(const QString &contentId, const QString &key, bool readwise,
+                    const QVariant &defaultValue = QVariant()) const;
 };

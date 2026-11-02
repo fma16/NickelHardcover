@@ -85,7 +85,9 @@ enum MenuOption {
   REVIEW,
   ANNOTATIONS,
   SETTINGS,
-  SIGNIN
+  SIGNIN,
+  READWISE_ENABLED,
+  READWISE_SIGNIN
 };
 
 void MenuController::showMainMenu() {
@@ -100,8 +102,11 @@ void MenuController::showMainMenu() {
   QList<Item> items;
   if (settings->isSignedIn()) {
     items = {
-        {"Sync now", MenuOption::SYNC_NOW, false, !syncController->isEnabled()},
-        {!settings->isEnabled(contentId) || syncController->notRealBook ? "Enable auto-sync" : "Disable auto-sync",
+        {settings->isDual() && settings->isSignedIn(true) ? "Sync now (both services)" : "Sync now",
+         MenuOption::SYNC_NOW, false, !syncController->isEnabled()},
+        {(!settings->isEnabled(contentId) || syncController->notRealBook ? QString("Enable auto-sync")
+                                                                         : QString("Disable auto-sync")) +
+             (settings->isDual() ? " (Hardcover)" : ""),
          MenuOption::TOGGLE_ENABLED, false, syncController->notRealBook},
         {settings->getLinkedId(contentId).isEmpty() ? "Manually link book" : "Unlink book", MenuOption::LINK},
         {"Update book status", MenuOption::BOOK_STATUS},
@@ -112,6 +117,19 @@ void MenuController::showMainMenu() {
     };
   } else {
     items = {{"Sign in to " + settings->serviceName(), MenuOption::SIGNIN}};
+    if (settings->isDual() && settings->isSignedIn(true)) {
+      items.append({"Sync now (Readwise Books)", MenuOption::SYNC_NOW, false, !syncController->isEnabled()});
+      items.append({"Settings", MenuOption::SETTINGS});
+    }
+  }
+  if (settings->isDual()) {
+    if (settings->isSignedIn(true)) {
+      items.append(
+          {settings->isEnabled(contentId, true) ? "Disable auto-sync (Readwise)" : "Enable auto-sync (Readwise)",
+           MenuOption::READWISE_ENABLED, false, syncController->notRealBook});
+    } else {
+      items.append({"Sign in to Readwise Books", MenuOption::READWISE_SIGNIN});
+    }
   }
 
   NickelTouchMenu *menu = showMenu(items, icon, 6);
@@ -231,5 +249,19 @@ void MenuController::triggered(const QAction *action) {
   case MenuOption::SIGNIN:
     SignInDialog::show();
     break;
+
+  case MenuOption::READWISE_SIGNIN:
+    SignInDialog::show(true);
+    break;
+
+  case MenuOption::READWISE_ENABLED: {
+    SyncController *ctl = SyncController::getInstance();
+    Settings *settings = Settings::getInstance();
+    bool enabled = !settings->isEnabled(ctl->contentId, true);
+    settings->setEnabled(ctl->contentId, enabled, true);
+    if (!enabled)
+      ctl->clearReadwiseProgress(ctl->contentId);
+    break;
+  }
   }
 }

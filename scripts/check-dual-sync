@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Compile the production sources with storage paths redirected into disposable
+# data. Nickel symbols and CLI completion are simulated by the test harness.
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cp -R hook/src "$scratch/src"
+cp hook/tests/dualsync.cc "$scratch/dualsync.cc"
+sed -i "s|/mnt/onboard|$scratch/onboard|g" "$scratch/src/files.h"
+for header in cli settings syncqueue synccontroller; do
+  moc "$scratch/src/$header.h" -o "$scratch/moc_$header.cc"
+done
+moc "$scratch/dualsync.cc" -o "$scratch/dualsync.moc"
+g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
+  -Ihook/NickelHook $(pkg-config --cflags Qt5Widgets Qt5Network) \
+  "$scratch/dualsync.cc" "$scratch"/moc_*.cc \
+  "$scratch/src/settings.cc" "$scratch/src/syncqueue.cc" \
+  "$scratch/src/synccontroller.cc" "$scratch/src/readwisesessions.cc" \
+  $(pkg-config --libs Qt5Widgets Qt5Network) -o "$scratch/test"
+QT_QPA_PLATFORM=offscreen "$scratch/test"

@@ -12,13 +12,18 @@ SyncController *SyncController::getInstance() {
   return &instance;
 }
 
-SyncController::SyncController(QObject *parent) : QObject(parent) {};
+SyncController::SyncController(QObject *parent) : QObject(parent){};
+
+SyncQueue *SyncController::primaryQueue() const {
+  return Settings::getInstance()->isReadwise() ? readwiseQueue : hardcoverQueue;
+}
 
 void SyncController::currentViewIndexChanged(int index) {
   if (index < 0)
     return;
 
-  queue->failed = false;
+  hardcoverQueue->failed = false;
+  readwiseQueue->failed = false;
 
   MainWindowController *mwc = MainWindowController__sharedInstance();
   QWidget *cv = MainWindowController__currentView(mwc);
@@ -44,16 +49,20 @@ void SyncController::currentViewIndexChanged(int index) {
 
   Settings *settings = Settings::getInstance();
   if (lastViewName == "ReadingView" &&
-      (name.endsWith("DragonPowerView") || MainWindowController__viewWithObjectName(mwc, "ReadingView") == nullptr) &&
-      settings->isEnabled(contentId) && queue->checkThreshold(contentId, settings->getSyncOnClose())) {
-    nh_log("Triggered on close auto-sync");
-    queue->run(contentId);
+      (name.endsWith("DragonPowerView") || MainWindowController__viewWithObjectName(mwc, "ReadingView") == nullptr)) {
+    for (SyncQueue *queue : {hardcoverQueue, readwiseQueue}) {
+      if (queue->enabled(contentId) && queue->checkThreshold(contentId, settings->getSyncOnClose())) {
+        nh_log("Triggered on close auto-sync");
+        queue->run(contentId);
+      }
+    }
   }
 
   if (name == "ReadingView") {
     beginReadwiseSession(cv);
-    if (settings->isEnabled(contentId)) {
-      queue->updateReadProgress(contentId);
+    for (SyncQueue *queue : {hardcoverQueue, readwiseQueue}) {
+      if (queue->enabled(contentId))
+        queue->updateReadProgress(contentId);
     }
 
     QObject::connect(cv, SIGNAL(pageChanged(int)), this, SLOT(pageChanged()), Qt::UniqueConnection);
@@ -71,7 +80,7 @@ void SyncController::pageChanged() {
 
   Settings *settings = Settings::getInstance();
 
-  if (settings->isReadwise()) {
+  if (readwiseQueue->available()) {
     MainWindowController *mwc = MainWindowController__sharedInstance();
     QWidget *view = MainWindowController__currentView(mwc);
     if (view->objectName() == "ReadingView") {
@@ -80,14 +89,17 @@ void SyncController::pageChanged() {
     }
   }
 
-  if (!settings->isEnabled(contentId))
+  if (!hardcoverQueue->enabled(contentId) && !readwiseQueue->enabled(contentId))
     return;
 
   MainWindowController *mwc = MainWindowController__sharedInstance();
   QWidget *cv = MainWindowController__currentView(mwc);
   QString name = cv->objectName();
   if (name == "ReadingView") {
-    queue->updateReadProgress(contentId);
+    for (SyncQueue *queue : {hardcoverQueue, readwiseQueue}) {
+      if (queue->enabled(contentId))
+        queue->updateReadProgress(contentId);
+    }
   }
 
   int syncDaily = settings->getSyncOnSchedule();
@@ -99,7 +111,9 @@ void SyncController::pageChanged() {
 
   lastSyncDaily = syncDaily;
 
-  if (timer == nullptr && syncDaily >= 0 && queue->checkThreshold(contentId, 1)) {
+  if (timer == nullptr && syncDaily >= 0 &&
+      ((hardcoverQueue->enabled(contentId) && hardcoverQueue->checkThreshold(contentId, 1)) ||
+       (readwiseQueue->enabled(contentId) && readwiseQueue->checkThreshold(contentId, 1)))) {
     timer = construct_PowerTimer("NickelHardcover-alarm", this);
 
     QDateTime time = QDateTime::currentDateTime();
@@ -113,12 +127,18 @@ void SyncController::pageChanged() {
     QObject::connect(timer, SIGNAL(timeout()), this, SLOT(alarm()));
   }
 
-  if (!queue->failed && ((getCurrentProgress() == 100 && settings->getLastProgress(contentId) != 100) ||
-                         queue->checkThreshold(contentId, settings->getSyncOnRead()))) {
-    nh_log("Triggered threshold auto-sync");
-    finishReadwiseSession();
-    beginReadwiseSession(cv);
-    queue->run(contentId);
+  for (SyncQueue *queue : {hardcoverQueue, readwiseQueue}) {
+    if (queue->enabled(contentId) && !queue->failed &&
+        ((queue->getProgress().value(contentId) == 100 &&
+          settings->getLastProgress(contentId, queue->readwise) != 100) ||
+         queue->checkThreshold(contentId, settings->getSyncOnRead()))) {
+      nh_log("Triggered threshold auto-sync");
+      if (queue->readwise) {
+        finishReadwiseSession();
+        beginReadwiseSession(cv);
+      }
+      queue->run(contentId);
+    }
   }
 }
 
@@ -129,7 +149,8 @@ void SyncController::alarm() {
   timer = nullptr;
   finishReadwiseSession();
   beginReadwiseSession(MainWindowController__currentView(MainWindowController__sharedInstance()));
-  queue->runAll();
+  hardcoverQueue->runAll();
+  readwiseQueue->runAll();
 }
 
 void SyncController::manualSync() {
@@ -137,23 +158,27 @@ void SyncController::manualSync() {
   finishReadwiseSession(true);
   MainWindowController *mwc = MainWindowController__sharedInstance();
   beginReadwiseSession(MainWindowController__currentView(mwc));
-  queue->updateReadProgress(contentId);
-  queue->run(contentId, true);
+  for (SyncQueue *queue : {hardcoverQueue, readwiseQueue}) {
+    if (queue->available()) {
+      queue->updateReadProgress(contentId);
+      queue->run(contentId, true);
+    }
+  }
 }
 
 void SyncController::beginReadwiseSession(QWidget *view) {
   Settings *settings = Settings::getInstance();
-  if (!settings->isReadwise() || !settings->isSignedIn() || notRealBook || view->objectName() != "ReadingView")
+  if (!readwiseQueue->available() || notRealBook || view->objectName() != "ReadingView")
     return;
   BookInfo book = getBookInfo(contentId);
-  readwise.begin(contentId, book.title, book.author, settings->getLinkedId(contentId), getDeviceModel(),
+  readwise.begin(contentId, book.title, book.author, settings->getLinkedId(contentId, true), getDeviceModel(),
                  settings->publishReadwiseSessions(), ReadingView__getCalculatedReadProgress(view));
 }
 
 void SyncController::finishReadwiseSession(bool manual) {
-  Settings *settings = Settings::getInstance();
-  if (!readwise.finish(manual || (settings->isReadwise() && settings->isEnabled(readwise.contentId())))) {
-    showBookErrorDialog(readwise.contentId(), "Cannot save the Readwise session. Check free storage before closing the book.");
+  if (!readwise.finish(manual || readwiseQueue->enabled(readwise.contentId()))) {
+    showBookErrorDialog(readwise.contentId(),
+                        "Cannot save the Readwise session. Check free storage before closing the book.");
   }
 }
 

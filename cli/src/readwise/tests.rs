@@ -169,77 +169,80 @@ fn updated_book() -> (u16, String) {
 
 #[test]
 fn sync_preserves_real_times_fractions_and_privacy_and_never_replays_accepted_sessions() {
-  let server = Server::new(vec![
-    created_book(),
-    created_session(),
-    (500, "{}".into()),
-    updated_book(),
-    (200, json!({"results": [{"id": 4_790_033}]}).to_string()),
-    created_session(),
-    updated_book(),
-  ]);
-  let mut fixture = Fixture::new(&server);
-  fixture.context.config.readwise_publish_to_feed = false;
-  let path = fixture.queue("01", 0.447);
-  fixture.context.config.readwise_publish_to_feed = Config::default().readwise_publish_to_feed;
-  assert!(fixture.sync().is_err());
-  assert!(path.with_extension("sent").exists());
-  fixture.sync().unwrap();
-  fixture.sync().unwrap();
-  let path = fixture.queue("02", 1.0);
-  let mut session: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-  session["device_model"] = "Kobo Libra Colour".into();
-  fs::write(&path, session.to_string()).unwrap();
-  fixture.sync().unwrap();
-  let requests = server.requests();
-  assert_eq!(requests.len(), 7);
-  assert_eq!(
-    requests[0],
-    (
-      "POST /books/api/v1/books HTTP/1.1".into(),
-      json!({"items": [{
-        "product": {"title": "Unmatched book", "author": "Test Author"},
-        "status": "currently_reading"
-      }]})
-    )
-  );
-  assert_eq!(
-    requests[1],
-    (
-      "POST /books/api/v1/sessions HTTP/1.1".into(),
-      json!({"items": [{
-        "book_id": 4790033, "started_at": "2026-09-10T20:14:05Z", "ended_at": "2026-09-10T20:58:35Z",
-        "format": "ebook", "percent_at_start": 0.412, "percent_at_end": 0.447,
-        "publish_to_feed": false, "device": {"type": "E-Reader", "vendor": "Kobo"}
-      }]})
-    )
-  );
-  assert_eq!(requests[2].0, "PATCH /books/api/v1/books HTTP/1.1");
-  assert_eq!(
-    requests[3].1,
-    json!({"items": [{"id": 4790033, "status": "currently_reading"}]})
-  );
-  assert_eq!(
-    requests[4],
-    ("GET /books/api/v1/books?ids=4790033 HTTP/1.1".into(), Value::Null)
-  );
-  assert_eq!(requests[5].0, "POST /books/api/v1/sessions HTTP/1.1");
-  assert_eq!(requests[5].1["items"][0]["book_id"], 4_790_033);
-  assert_eq!(requests[5].1["items"][0]["publish_to_feed"], true);
-  assert_eq!(
-    requests[5].1["items"][0]["device"],
-    json!({"type": "E-Reader", "vendor": "Kobo", "model": "Kobo Libra Colour"})
-  );
-  assert_eq!(
-    requests[6].1,
-    json!({"items": [{"id": 4790033, "status": "finished", "finished_reading_at": "2026-09-10T20:58:35Z"}]})
-  );
-  assert_eq!(
-    fs::read_dir(fixture.client.directory.join("readwise-sessions"))
-      .unwrap()
-      .count(),
-    0
-  );
+  for provider in ["readwise", "dual"] {
+    let server = Server::new(vec![
+      created_book(),
+      created_session(),
+      (500, "{}".into()),
+      updated_book(),
+      (200, json!({"results": [{"id": 4_790_033}]}).to_string()),
+      created_session(),
+      updated_book(),
+    ]);
+    let mut fixture = Fixture::new(&server);
+    fixture.context.config.provider = provider.into();
+    fixture.context.config.readwise_publish_to_feed = false;
+    let path = fixture.queue("01", 0.447);
+    fixture.context.config.readwise_publish_to_feed = Config::default().readwise_publish_to_feed;
+    assert!(fixture.sync().is_err());
+    assert!(path.with_extension("sent").exists());
+    fixture.sync().unwrap();
+    fixture.sync().unwrap();
+    let path = fixture.queue("02", 1.0);
+    let mut session: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    session["device_model"] = "Kobo Libra Colour".into();
+    fs::write(&path, session.to_string()).unwrap();
+    fixture.sync().unwrap();
+    let requests = server.requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+      requests[0],
+      (
+        "POST /books/api/v1/books HTTP/1.1".into(),
+        json!({"items": [{
+          "product": {"title": "Unmatched book", "author": "Test Author"},
+          "status": "currently_reading"
+        }]})
+      )
+    );
+    assert_eq!(
+      requests[1],
+      (
+        "POST /books/api/v1/sessions HTTP/1.1".into(),
+        json!({"items": [{
+          "book_id": 4790033, "started_at": "2026-09-10T20:14:05Z", "ended_at": "2026-09-10T20:58:35Z",
+          "format": "ebook", "percent_at_start": 0.412, "percent_at_end": 0.447,
+          "publish_to_feed": false, "device": {"type": "E-Reader", "vendor": "Kobo"}
+        }]})
+      )
+    );
+    assert_eq!(requests[2].0, "PATCH /books/api/v1/books HTTP/1.1");
+    assert_eq!(
+      requests[3].1,
+      json!({"items": [{"id": 4790033, "status": "currently_reading"}]})
+    );
+    assert_eq!(
+      requests[4],
+      ("GET /books/api/v1/books?ids=4790033 HTTP/1.1".into(), Value::Null)
+    );
+    assert_eq!(requests[5].0, "POST /books/api/v1/sessions HTTP/1.1");
+    assert_eq!(requests[5].1["items"][0]["book_id"], 4_790_033);
+    assert_eq!(requests[5].1["items"][0]["publish_to_feed"], true);
+    assert_eq!(
+      requests[5].1["items"][0]["device"],
+      json!({"type": "E-Reader", "vendor": "Kobo", "model": "Kobo Libra Colour"})
+    );
+    assert_eq!(
+      requests[6].1,
+      json!({"items": [{"id": 4790033, "status": "finished", "finished_reading_at": "2026-09-10T20:58:35Z"}]})
+    );
+    assert_eq!(
+      fs::read_dir(fixture.client.directory.join("readwise-sessions"))
+        .unwrap()
+        .count(),
+      0
+    );
+  }
 }
 
 #[test]

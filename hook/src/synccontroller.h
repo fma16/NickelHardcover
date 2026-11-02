@@ -31,17 +31,21 @@ public:
 
   BookInfo getBookInfo(const QString &contentId) const { return books.value(contentId); }
 
-  int getCurrentProgress() const { return queue->getProgress().value(contentId); }
+  int getCurrentProgress() const { return primaryQueue()->getProgress().value(contentId); }
 
-  const QHash<QString, int> &getProgress() const { return queue->getProgress(); }
+  const QHash<QString, int> &getProgress() const { return primaryQueue()->getProgress(); }
 
-  void clearReadProgress(const QString &contentId) { queue->clearReadProgress(contentId); }
+  void clearReadProgress(const QString &contentId) { primaryQueue()->clearReadProgress(contentId); }
+  void clearReadwiseProgress(const QString &contentId) { readwiseQueue->clearReadProgress(contentId); }
 
   void manualSync();
   void finishReadwiseSession(bool manual = false);
   QDateTime getAlarm() const;
 
-  bool isEnabled() const { return !notRealBook && !queue->running; }
+  bool isEnabled() const {
+    return !notRealBook && ((hardcoverQueue->available() && !hardcoverQueue->running) ||
+                            (readwiseQueue->available() && !readwiseQueue->running));
+  }
 
   void currentViewIndexChanged(int index);
 
@@ -56,7 +60,9 @@ private:
   SyncController(QObject *parent = nullptr);
 
   PowerTimer *timer = nullptr;
-  SyncQueue *queue = new SyncQueue(this);
+  SyncQueue *hardcoverQueue = new SyncQueue(false, this);
+  SyncQueue *readwiseQueue = new SyncQueue(true, this);
+  SyncQueue *primaryQueue() const;
 
   QHash<QString, BookInfo> books;
 

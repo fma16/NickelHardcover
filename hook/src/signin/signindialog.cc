@@ -12,15 +12,16 @@
 #include "qnamespace.h"
 #include "signindialog.h"
 
-SignInDialog::SignInDialog() : Dialog("Sign in to " + Settings::getInstance()->serviceName()) {
+SignInDialog::SignInDialog(bool readwise)
+    : Dialog(readwise ? "Sign in to Readwise Books" : "Sign in to Hardcover.app") {
   QVBoxLayout *layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
 
-  if (Settings::getInstance()->isReadwise()) {
+  if (readwise) {
     Label *help = new Label(Label::Small,
-      "Visit readwise.io/access_token on your computer.<br><br>Connect the Kobo by USB and set "
-      "readwise_token in .adds/NickelHardcover/config.ini.<br><br>Keep your token private. "
-      "Eject the Kobo and reopen your book.");
+                            "Visit readwise.io/access_token on your computer.<br><br>Connect the Kobo by USB and set "
+                            "readwise_token in .adds/NickelHardcover/config.ini.<br><br>Keep your token private. "
+                            "Eject the Kobo and reopen your book.");
     help->setWordWrap(true);
     layout->addWidget(help);
     return;

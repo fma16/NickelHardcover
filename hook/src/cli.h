@@ -11,12 +11,7 @@ class CLI : public QObject {
   Q_OBJECT
 
 public:
-  enum FailureReason {
-    Network,
-    Error,
-    BookNotFound,
-    Unauthorized
-  };
+  enum FailureReason { Network, Error, BookNotFound, Unauthorized };
 
   static CLI *listBookmarks() { return new CLI({"list-bookmarks"}); }
   static CLI *listEditions(const QString &bookId, int readingFormat, const QString &language);
@@ -30,7 +25,7 @@ public:
   static CLI *setUserBook(int status);
   static CLI *setUserBook(float rating, const QString &text, bool spoilers, bool sponsored);
   static CLI *search(const QString &query, int limit, int page);
-  static CLI *update(const QString &contentId, int percentage, bool silent = false);
+  static CLI *update(const QString &contentId, int percentage, bool silent, bool readwise);
 
 public Q_SLOTS:
   void networkConnected();
@@ -44,7 +39,8 @@ Q_SIGNALS:
 private:
   static QStringList getIdentifier(const QString &contentId = QString());
 
-  CLI(QStringList arguments, bool silent = false, bool icon = false, const QString &contentId = QString(), QObject *parent = nullptr);
+  CLI(QStringList arguments, bool silent = false, bool icon = false, const QString &contentId = QString(),
+      QObject *parent = nullptr);
 
   ~CLI();
 
@@ -62,4 +58,6 @@ private:
   QString contentId;
   bool silent = false;
   bool iconEnabled = false;
+  bool readwise = false;
+  bool networkFinished = false;
 };

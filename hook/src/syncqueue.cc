@@ -1,15 +1,24 @@
+#include <QDir>
 #include <QSettings>
 #include <QTimer>
-#include <QDir>
 
 #include <NickelHook.h>
 
 #include "settings.h"
 #include "syncqueue.h"
 
-SyncQueue::SyncQueue(QObject *parent) : QObject(parent) {
+SyncQueue::SyncQueue(bool readwise, QObject *parent) : QObject(parent), readwise(readwise) {
   WirelessManager *wm = WirelessManager__sharedInstance();
   QObject::connect(wm, SIGNAL(networkConnected()), this, SLOT(networkConnected()));
+}
+
+bool SyncQueue::available() const {
+  Settings *settings = Settings::getInstance();
+  return settings->usesService(readwise) && settings->isSignedIn(readwise);
+}
+
+bool SyncQueue::enabled(const QString &contentId) const {
+  return available() && Settings::getInstance()->isEnabled(contentId, readwise);
 }
 
 void SyncQueue::updateReadProgress(const QString &contentId) {
@@ -17,11 +26,11 @@ void SyncQueue::updateReadProgress(const QString &contentId) {
   QWidget *cv = MainWindowController__currentView(mwc);
 
   int newProgress = ReadingView__getCalculatedReadProgress(cv);
-  if (newProgress == 99 && !Settings::getInstance()->isReadwise()) {
+  if (newProgress == 99 && !readwise) {
     newProgress = 100;
   }
 
-  if ((!Settings::getInstance()->isReadwise() && newProgress < 2) || newProgress == progress.value(contentId)) {
+  if ((!readwise && newProgress < 2) || newProgress == progress.value(contentId)) {
     return;
   }
 
@@ -32,12 +41,13 @@ void SyncQueue::updateReadProgress(const QString &contentId) {
 
 bool SyncQueue::checkThreshold(const QString &contentId, int threshold) const {
   return threshold > 0 && progress.value(contentId) > 0 &&
-         abs(Settings::getInstance()->getLastProgress(contentId) - progress.value(contentId)) >= threshold;
+         abs(Settings::getInstance()->getLastProgress(contentId, readwise) - progress.value(contentId)) >= threshold;
 }
 
 void SyncQueue::networkConnected() {
-  if (Settings::getInstance()->isReadwise() && Settings::getInstance()->isSignedIn() &&
-      Settings::getInstance()->getRetryOnNetwork()) {
+  if (!available() || !Settings::getInstance()->getRetryOnNetwork())
+    return;
+  if (readwise) {
     QDir spool(QString(Files::adds_directory) + "/readwise-sessions");
     if (!spool.entryList({"*.json", "*.sent"}, QDir::Files).isEmpty())
       run(QString());
@@ -57,7 +67,7 @@ void SyncQueue::networkConnected() {
 }
 
 void SyncQueue::runAll() {
-  if (Settings::getInstance()->isReadwise()) {
+  if (readwise) {
     run(QString());
     return;
   }
@@ -69,6 +79,8 @@ void SyncQueue::runAll() {
 }
 
 void SyncQueue::prepareNext() {
+  if (running)
+    return;
   QObject::connect(this, &SyncQueue::finished, this, &SyncQueue::prepareNext, Qt::UniqueConnection);
 
   if (queue.isEmpty()) {
@@ -84,16 +96,23 @@ void SyncQueue::prepareNext() {
 }
 
 void SyncQueue::run(const QString &contentId, bool manual) {
+  if (!available())
+    return;
   if (running) {
+    // A deferred Readwise drain must not acknowledge progress from an interval
+    // that may still be active when the previous request completes.
+    queue.insert(readwise ? QString() : contentId);
+    QObject::connect(this, &SyncQueue::finished, this, &SyncQueue::prepareNext, Qt::UniqueConnection);
     return;
   }
 
   retryQueue.remove(contentId);
   currentProgress = progress.value(contentId);
 
-  if (currentProgress == 0 && !Settings::getInstance()->isReadwise()) {
+  if (currentProgress == 0 && !readwise) {
     nh_log("Attempted to sync %s with no saved reading progress", qPrintable(contentId));
-    showBookErrorDialog(contentId, "Reading progress must be at least 2% to sync with Hardcover.app");
+    if (manual)
+      showBookErrorDialog(contentId, "Reading progress must be at least 2% to sync with Hardcover.app");
     finished();
     return;
   }
@@ -103,13 +122,14 @@ void SyncQueue::run(const QString &contentId, bool manual) {
   this->currentContentId = contentId;
 
   if (manual) {
+    closeDialog();
     dialog = ConfirmationDialogFactory__getConfirmationDialog(nullptr);
     ConfirmationDialog__showCloseButton(dialog, false);
-    ConfirmationDialog__setText(dialog, "Syncing with " + Settings::getInstance()->serviceName() + "...");
+    ConfirmationDialog__setText(dialog, readwise ? "Syncing with Readwise Books..." : "Syncing with Hardcover.app...");
     dialog->open();
   }
 
-  CLI *cli = CLI::update(contentId, currentProgress, !manual);
+  CLI *cli = CLI::update(contentId, currentProgress, !manual, readwise);
   QObject::connect(cli, &CLI::success, this, &SyncQueue::success);
   QObject::connect(cli, &CLI::failure, this, &SyncQueue::failure);
 }
@@ -117,21 +137,21 @@ void SyncQueue::run(const QString &contentId, bool manual) {
 void SyncQueue::success() {
   running = false;
 
-  if (currentProgress == 100 && !Settings::getInstance()->isReadwise()) {
-    Settings::getInstance()->setEnabled(currentContentId, false);
+  if (currentProgress == 100 && !readwise) {
+    Settings::getInstance()->setEnabled(currentContentId, false, false);
   }
 
-  Settings::getInstance()->setLastProgress(currentContentId, currentProgress);
-  if (!Settings::getInstance()->isReadwise() || progress.value(currentContentId) == currentProgress)
-    progress.remove(currentContentId);
+  if (!currentContentId.isEmpty()) {
+    Settings::getInstance()->setLastProgress(currentContentId, currentProgress, readwise);
+    if (progress.value(currentContentId) == currentProgress)
+      progress.remove(currentContentId);
+  }
 
+  if (dialog != nullptr) {
+    ConfirmationDialog__setText(dialog, readwise ? "Readwise Books: success!" : "Hardcover.app: success!");
+    QTimer::singleShot(800, this, &SyncQueue::closeDialog);
+  }
   finished();
-
-  if (dialog == nullptr)
-    return;
-
-  ConfirmationDialog__setText(dialog, "Success!");
-  QTimer::singleShot(800, this, &SyncQueue::closeDialog);
 }
 
 void SyncQueue::failure(CLI::FailureReason reason) {

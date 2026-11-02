@@ -305,7 +305,7 @@ _nh_ReadingController__setVolume(ReadingController *_this, Volume *volume, Bookm
 
   ReadingController__setVolume(_this, volume, bookmark);
   // Nickel can reuse ReadingView when switching books without changing its index.
-  if (Settings::getInstance()->isReadwise()) {
+  if (Settings::getInstance()->usesService(true)) {
     QTimer::singleShot(0, syncController, [syncController] { syncController->currentViewIndexChanged(0); });
   }
 }
@@ -372,5 +372,6 @@ QString describeBookError(const QString &contentId, const QString &message) {
 }
 
 void showBookErrorDialog(const QString &contentId, const QString &message) {
-  ConfirmationDialogFactory__showErrorDialog(Settings::getInstance()->serviceName(), describeBookError(contentId, message));
+  ConfirmationDialogFactory__showErrorDialog(Settings::getInstance()->serviceName(),
+                                             describeBookError(contentId, message));
 }
