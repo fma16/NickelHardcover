@@ -309,23 +309,38 @@ fn ambiguous_session_outcomes_block_replay_and_newer_sessions() {
 
 #[test]
 fn batch_errors_are_not_success_and_rate_limits_persist_between_syncs() {
-  for (response, extension) in [
+  // Documented Error object: the dialog and log must name the rejected request
+  // and field, with remote text escaped for Nickel's HTML dialogs.
+  let error = json!({
+    "code": "invalid_value",
+    "message": "Invalid value for items.0.book_id.",
+    "details": [{"location": "body", "field": "items.0.book_id", "code": "invalid_value",
+      "message": "Sessions cannot be recorded for a <b>sample</b>."}]
+  });
+  for (response, extension, expected) in [
     (
       (
         200,
-        json!({"results": [{"status": "error", "error": {"code": "invalid_value"}}]}).to_string(),
+        json!({"results": [{"status": "error", "error": error}]}).to_string(),
       ),
       "failed",
+      "Readwise rejected POST /sessions: invalid_value: Invalid value for items.0.book_id. [body items.0.book_id: invalid_value — Sessions cannot be recorded for a &lt;b&gt;sample&lt;/b&gt;.]",
     ),
-    ((429, "{}".into()), "json"),
-    ((401, "{}".into()), "json"),
-    ((403, "{}".into()), "json"),
+    (
+      (400, json!({"error": error}).to_string()),
+      "failed",
+      "Readwise returned HTTP 400. Request: POST /sessions. Detail: invalid_value: Invalid value for items.0.book_id. [body items.0.book_id: invalid_value",
+    ),
+    ((429, "{}".into()), "json", "Request: POST /sessions."),
+    ((401, "{}".into()), "json", "readwise_token"),
+    ((403, "{}".into()), "json", "Readwise Books"),
   ] {
     let rate_limited = response.0 == 429;
     let server = Server::new(vec![created_book(), response]);
     let mut fixture = Fixture::new(&server);
     let path = fixture.queue("01", 0.447);
-    assert!(fixture.sync().is_err());
+    let message = fixture.sync().unwrap_err().to_string();
+    assert!(message.contains(expected), "{message}");
     assert!(path.with_extension(extension).exists());
     assert!(!path.with_extension("sent").exists());
     if rate_limited || extension == "failed" {

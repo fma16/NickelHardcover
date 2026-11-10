@@ -43,6 +43,36 @@ impl std::fmt::Display for ApiError {
 }
 impl std::error::Error for ApiError {}
 
+/// Summarizes a documented Readwise Error object: code, message and each
+/// rejected field. Readwise states that its messages never repeat submitted
+/// values, and requests never echo the token. The text is escaped because
+/// Nickel renders dialogs as HTML, and bounded to keep dialogs readable.
+fn describe(error: &Value) -> String {
+  use std::fmt::Write;
+  let text = |value: &Value| value.as_str().unwrap_or("").trim().to_owned();
+  let message = text(&error["message"]);
+  let mut summary = error["code"].as_str().unwrap_or("unknown").to_owned();
+  if !message.is_empty() {
+    let _ = write!(summary, ": {message}");
+  }
+  for detail in error["details"].as_array().into_iter().flatten() {
+    let field = format!("{} {}", text(&detail["location"]), text(&detail["field"]));
+    let _ = write!(summary, " [{}: {}", field.trim(), text(&detail["code"]));
+    let reason = text(&detail["message"]);
+    if !reason.is_empty() && reason != message {
+      let _ = write!(summary, " — {reason}");
+    }
+    summary.push(']');
+  }
+  summary
+    .chars()
+    .take(400)
+    .collect::<String>()
+    .replace('&', "&amp;")
+    .replace('<', "&lt;")
+    .replace('>', "&gt;")
+}
+
 #[derive(Deserialize, Serialize)]
 struct Session {
   content_id: String,
@@ -130,13 +160,26 @@ impl Client {
       })?;
     }
     if status != 200 {
-      return Err(ApiError {
-        message: match status {
+      // Name the request and keep the documented error detail for diagnosis.
+      let detail = response
+        .body_mut()
+        .read_json::<Value>()
+        .ok()
+        .filter(|body| body["error"].is_object())
+        .map(|body| format!(" Detail: {}", describe(&body["error"])))
+        .unwrap_or_default();
+      let message = format!(
+        "{} Request: {method} {}.{detail}",
+        match status {
           401 => "Readwise token is invalid. Update readwise_token in config.ini.".into(),
           403 => "Readwise access denied. Check that your account has Readwise Books.".into(),
           429 => "Readwise rate limit reached. Retry after the server's waiting period.".into(),
           _ => format!("Readwise returned HTTP {status}."),
         },
+        path.split('?').next().unwrap_or(path)
+      );
+      return Err(ApiError {
+        message,
         rejected: (400..500).contains(&status),
         retryable: matches!(status, 401 | 403 | 429),
       });
@@ -168,8 +211,7 @@ impl Client {
     if result["status"] == "error" {
       let code = result["error"]["code"].as_str().unwrap_or("unknown");
       return Err(ApiError {
-        // Do not render remote message text as HTML in Nickel dialogs.
-        message: format!("Readwise rejected the item ({code})."),
+        message: format!("Readwise rejected {method} {path}: {}", describe(&result["error"])),
         rejected: true,
         retryable: matches!(code, "rate_limited" | "unauthenticated" | "forbidden"),
       });
