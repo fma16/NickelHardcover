@@ -20,12 +20,19 @@ struct OAuthToken {
 }
 
 /// Get and store OAuth `access_token`, `refresh_token`, and expiration
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(FromArgs, PartialEq)]
 #[argh(subcommand, name = "oauth-set")]
 pub struct OAuthSet {
   /// the device code returned by `oauth-request`
   #[argh(option)]
   device_code: String,
+}
+
+// `run` logs its arguments at INFO, which the hook forwards to syslog.
+impl std::fmt::Debug for OAuthSet {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("OAuthSet").field("device_code", &"[redacted]").finish()
+  }
 }
 
 pub fn run(context: &mut AppContext, args: &OAuthSet) -> Result<()> {

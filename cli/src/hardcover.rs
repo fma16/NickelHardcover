@@ -76,15 +76,21 @@ pub fn handle_response(context: &mut AppContext, res: Response<Body>) -> Result<
 
   let body = res.into_body().read_to_string()?;
 
-  log::debug!("{body}");
+  // OAuth responses carry tokens and device codes, and every log level is
+  // buffered and may be written to disk even with debug disabled. Only log
+  // and report the body after redacting them; a body that is not JSON could
+  // be a truncated token response, so report its size only.
+  let json = serde_json::from_str::<Value>(&body)
+    .with_context(|| format!("Failed to parse JSON response ({} bytes)", body.len()))?;
+  let redacted = redact(json.clone()).to_string();
 
-  let json = serde_json::from_str::<Value>(&body).with_context(|| format!("Failed to parse JSON<br>>{body}"))?;
+  log::debug!("{redacted}");
 
   let mut errors = Vec::<String>::new();
   collect_errors(&json, &mut errors);
 
   if errors.is_empty() && !code.is_success() {
-    errors.push(body);
+    errors.push(redacted);
   }
 
   if !errors.is_empty() {
@@ -95,6 +101,23 @@ pub fn handle_response(context: &mut AppContext, res: Response<Body>) -> Result<
   }
 
   Ok(json)
+}
+
+fn redact(mut value: Value) -> Value {
+  match &mut value {
+    Value::Array(values) => values.iter_mut().for_each(|v| *v = redact(v.take())),
+    Value::Object(map) => {
+      for (key, v) in map.iter_mut() {
+        *v = if ["access_token", "refresh_token", "id_token", "device_code", "user_code"].contains(&key.as_str()) {
+          Value::from("[redacted]")
+        } else {
+          redact(v.take())
+        };
+      }
+    }
+    _ => {}
+  }
+  value
 }
 
 fn collect_errors(value: &serde_json::Value, errors: &mut Vec<String>) {
@@ -181,4 +204,52 @@ pub fn batch_requests<T: Serialize, R: DeserializeOwned>(
     })
     .flatten_ok()
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use argh::FromArgs;
+
+  use super::*;
+  use crate::{commands::oauthset::OAuthSet, config::Config, utils::LOGGER};
+
+  #[test]
+  fn oauth_secrets_never_reach_errors_or_buffered_logs() {
+    // As in `main`: every level is buffered and may be written to disk.
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Debug);
+    let mut context = AppContext {
+      agent: ureq::Agent::new_with_defaults(),
+      config: Config::default(),
+      rate_limit: 1,
+      user: None,
+    };
+    let tokens = r#"{"access_token":"SECRET-A","refresh_token":"SECRET-R","expires_in":3600,"nested":[{"device_code":"SECRET-D","user_code":"SECRET-U"}]}"#;
+    let respond = |status: u16, body: &str| {
+      Response::builder()
+        .status(status)
+        .body(Body::builder().data(body.to_owned()))
+        .unwrap()
+    };
+
+    // Callers still receive the real tokens they need to store.
+    let json = handle_response(&mut context, respond(200, tokens)).unwrap();
+    assert_eq!(json["refresh_token"], "SECRET-R");
+
+    let error = format!("{:#}", handle_response(&mut context, respond(400, tokens)).unwrap_err());
+    assert!(
+      error.contains(r#""access_token":"[redacted]""#) && error.contains("3600"),
+      "{error}"
+    );
+    let truncated = format!(
+      "{:#}",
+      handle_response(&mut context, respond(200, r#"{"access_token":"SECRET-A"#)).unwrap_err()
+    );
+    let log = LOGGER.buffer.lock().unwrap().clone();
+    assert!(log.contains(r#""refresh_token":"[redacted]""#), "{log}");
+    let args = OAuthSet::from_args(&["oauth-set"], &["--device-code", "SECRET-D"]).unwrap();
+    for text in [error, truncated, format!("{args:?}"), log] {
+      assert!(!text.contains("SECRET"), "{text}");
+    }
+  }
 }

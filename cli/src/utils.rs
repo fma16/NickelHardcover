@@ -26,6 +26,7 @@ macro_rules! send_msg {
       match value {
         Messages::Log(_) => {} // Already recorded by `BufferedLogger::log`
         Messages::Error(err) => log::error!("{}", err.message),
+        Messages::OAuthDevice(_) => log::debug!("OAuthDevice [redacted]"),
         _ => log::debug!("{message}"),
       }
 
@@ -74,7 +75,7 @@ impl FromStr for Percentage {
 }
 
 pub struct BufferedLogger {
-  buffer: Mutex<String>,
+  pub(crate) buffer: Mutex<String>,
 }
 
 impl BufferedLogger {
