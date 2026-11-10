@@ -160,3 +160,17 @@ vérifier sur appareil : ouverture/fermeture, veille/réveil, changement de livr
 reconnexion Wi-Fi, progression réelle et absence de doublons côté Readwise.
 Pour désinstaller, sauvegarder les sessions à conserver, retirer
 `.adds/NickelHardcover/` puis redémarrer manuellement la Kobo.
+
+## TODO
+
+- [ ] Ajouter une connexion Readwise Books par QR code sur la Kobo : scanner
+  depuis son téléphone, se connecter et autoriser l'accès chez Readwise, puis
+  terminer la connexion sur la liseuse sans copier de jeton par USB.
+  - Vérifier les possibilités OAuth de [Readwise](https://readwise.io/books_api) :
+    Device Authorization Flow (non confirmé), redirections, PKCE et renouvellement
+    des jetons.
+  - Privilégier un Device Flow natif s'il est disponible ; sinon, évaluer un service
+    HTTPS d'appairage temporaire et ses contraintes d'hébergement et de sécurité.
+  - Gérer les jetons OAuth avec `Authorization: Bearer …`, l'expiration et les
+    erreurs d'autorisation ; conserver la configuration par jeton personnel.
+  - Valider le parcours complet sur une vraie Kobo et un téléphone.
