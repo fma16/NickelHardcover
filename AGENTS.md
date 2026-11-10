@@ -137,23 +137,52 @@ Les deux binaires doivent être ARM, et non Linux x86. L'archive conserve les
 chemins NickelHardcover et remplace son plugin. Elle ne distribue que
 `config_example.ini`, pas `config.ini`, afin de préserver la configuration existante.
 
+<a id="etat-de-validation"></a>
+
 ### État de validation et particularités de l'environnement
 
 Le [fil d'intégration](https://ampcode.com/threads/T-01a197ca-d75a-72f4-9df7-1cdf97aa50a5)
 rapporte une archive ARM effectivement construite et installée sur une Kobo
 en **4.46.23852**, une session réelle de **14 % à 15 %** et une synchronisation à
-la fermeture confirmées. La reprise hors ligne restait à tester à la fin de ce fil.
+la fermeture confirmées. L'utilisateur a ensuite confirmé en mode Readwise seul
+l'envoi manuel, l'envoi à la fermeture et la reprise après lecture hors ligne.
 Ce constat historique ne valide pas toutes les Kobo ni les modifications futures.
 
 Le [fil de double synchronisation](https://ampcode.com/threads/T-01a19c02-fd21-7447-bca1-618259ba3677)
 a ensuite validé **30 tests Rust**, les tests Qt de capture et d'orchestration
 double, les contrôles C++, `cargo test --workspace`, Clippy strict sur le binaire
 et la compilation ARM/Qt 5.2.1. La nouvelle archive a été vérifiée : deux binaires
-ARM EABI5 et configuration exemple, sans identifiants utilisateur. **Le mode double,
-le rendu et les hooks de cette version n'ont pas été validés sur la Kobo** ;
-la reprise hors ligne sur appareil reste également à vérifier.
+ARM EABI5 et configuration exemple, sans identifiants utilisateur.
 
-Cette archive a été compilée avec `strayrose/nickeltc:latest` (alors Cargo 1.97,
+Sur la même Kobo, l'archive du commit `02ae6dc` en mode `dual` a validé (essais
+de l'utilisateur, novembre 2026, suivis dans le fil d'intégration) :
+
+- **Sync now (both services)** : les deux services à jour, sans erreur ni doublon ;
+- la synchronisation à la fermeture des deux services, une fois l'auto-sync
+  activée par livre **pour chaque service** (Hardcover ne se synchronisait pas
+  tant que seule l'auto-sync Readwise était active).
+
+Lors du premier essai à la fermeture, Readwise a rejeté `POST /sessions` avec
+`invalid_value` pour une session aux données normales (livre `5721999`, 40→41 %),
+alors que deux sessions du même livre avaient été acceptées la veille. La même
+charge utile, renvoyée une seule fois à l'identique avec l'accord de
+l'utilisateur, a été acceptée (HTTP 200, `created`). **La cause reste inconnue** :
+l'archive installée ne conservait que le code d'erreur. Les erreurs Readwise
+conservent désormais la requête et les champs rejetés (voir
+[Journaux et secrets](#journaux-et-secrets)) ; ce diagnostic n'a pas encore été
+installé sur la Kobo. La documentation Readwise cite notamment, pour
+`invalid_value` sur `POST /sessions`, un `book_id` désignant un extrait (*sample*) ;
+aucune donnée ne le démontre pour ce livre.
+
+**Non validé sur appareil** : reprise hors ligne en mode double, veille/réveil,
+changement de livre, sessions successives, indépendance des services en cas
+d'échec (seulement simulée par `scripts/check-dual-sync`), rendu de tous les
+écrans. La file Hardcover reste en mémoire comme dans l'amont : sa perte au
+redémarrage est une **limite héritée**, que l'essai hors ligne sans redémarrage
+ne couvre pas. Ne pas présenter la persistance Readwise comme valable pour les
+deux services.
+
+L'archive du fil de double synchronisation a été compilée avec `strayrose/nickeltc:latest` (alors Cargo 1.97,
 Qt 5.2.1, sans mise), et non par exécution de toute la recette Dockerfile ci-dessus.
 Dans cet environnement, la compilation a utilisé depuis `cli/` :
 
@@ -281,7 +310,7 @@ La file persistante est `.adds/NickelHardcover/readwise-sessions/` :
 | `.json` | Non envoyée ou refusée avec reprise possible (401/403/429) | Corriger le jeton/l'accès, respecter `Retry-After`, puis synchroniser |
 | `.sending` | Envoi commencé, résultat incertain ou interruption | Vérifier dans Readwise ; aucune relance automatique |
 | `.sent` | Session acceptée, statut du livre restant à mettre à jour | Synchroniser ; seul le `PATCH` du livre est rejoué |
-| `.failed` | Rejet explicite, même si HTTP 200 | Corriger le problème avant de remettre le fichier en `.json` |
+| `.failed` | Rejet explicite, même si HTTP 200 | Lire le motif (requête, code, champ) dans le message d'erreur ou `nickelhardcover_*.log`, corriger, puis remettre le fichier en `.json` |
 
 Un `.sending` ou `.failed` bloque la file Readwise, **pas Hardcover**, pour éviter
 de réappliquer une ancienne progression après une plus récente. Le verrou `readwise-sync.lock` empêche des
@@ -300,6 +329,12 @@ la fin d'un éventuel envoi, connecter la Kobo en USB et sauvegarder les fichier
 3. Une création de livre au résultat incertain bloque aussi les nouvelles
    créations pour ce livre. Le retrouver dans Readwise, l'associer manuellement
    puis lancer **Sync now**, plutôt que supprimer aveuglément son cache.
+4. Pour une session `.failed`, noter le message d'erreur complet : il indique la
+   requête, le code et le champ rejetés, sans jeton. Corriger la cause (par
+   exemple une mauvaise association, via `linked_id`), puis renommer le fichier
+   en `.json` et lancer **Sync now**. Le rejet `invalid_value` décrit dans
+   l'[état de validation](#etat-de-validation) a été accepté à l'identique lors
+   d'une relance unique : ne pas en conclure qu'une relance suffit en général.
 
 Les erreurs CLI renvoient vers le README : y conserver un avertissement et un
 lien vers cette procédure même si les détails techniques restent ici.
@@ -328,6 +363,32 @@ Changer le jeton n'effectue **pas** une migration de compte. Avant le changement
 - `mise run dump <fichier>` extrait les symboles bruts et démanglés de `libnickel`.
 - `mise run schema` récupère le schéma GraphQL Hardcover avec
   `HARDCOVER_AUTHORIZATION` ; cette tâche ne concerne pas Readwise Books.
+
+### Journaux et secrets
+
+- La CLI met en mémoire **tous les niveaux** de log (`set_max_level(Debug)`,
+  `BufferedLogger::enabled` toujours vrai) et écrit `nickelhardcover_*.log` à côté
+  de son exécutable après toute erreur attendue ou panique, **même avec
+  `debug = false`** ; `debug` n'ajoute que l'écriture après un succès. Les messages
+  INFO sont aussi transmis au syslog par le hook. Traiter tout `log::*` comme
+  persistant.
+- `hardcover::handle_response` masque `access_token`, `refresh_token`, `id_token`,
+  `device_code` et `user_code` avant de journaliser un corps de réponse ou de
+  l'inclure dans une erreur ; un corps non JSON, éventuellement une réponse OAuth
+  tronquée, n'est rapporté que par sa taille. `OAuthSet` a un `Debug` masqué et
+  `send_msg!` ne journalise pas le contenu d'`OAuthDevice`. Ne pas réintroduire
+  `log::debug!("{body}")` ni `derive(Debug)` sur des arguments secrets. ureq
+  masque lui-même les en-têtes sensibles dans ses logs.
+- Une erreur Readwise conserve la méthode, le chemin sans paramètres, puis le
+  `code`, le `message` et chaque `details[]` (`location`, `field`, `code`,
+  `message`) de l'objet Error documenté, y compris pour les réponses HTTP non 200.
+  Ce texte est échappé (HTML des dialogues Nickel) et tronqué à 400 caractères.
+  Readwise garantit que `message` ne répète pas les valeurs envoyées ; ne jamais y
+  ajouter le corps de requête, les en-têtes ni le jeton.
+- Les logs produits par les archives antérieures à ces corrections, dont celle de
+  `02ae6dc`, peuvent contenir des jetons OAuth Hardcover : ne pas les partager.
+- Même masqués, les logs contiennent les titres des livres et des données du
+  compte Hardcover : les relire avant de les joindre à un rapport de bug.
 
 Ne pas joindre de jeton, de base utilisateur ou de file de sessions privée à un
 rapport de bug. Toute installation sur une vraie Kobo ou écriture sur un compte

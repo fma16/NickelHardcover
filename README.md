@@ -80,9 +80,9 @@ You need:
 > Readwise**. Have the archive built from this repository, or follow the
 > developer [build instructions](AGENTS.md#compilation-pour-kobo).
 
-**Testing status:** Readwise-only mode was tried on a real Kobo. Dual sync and
-offline recovery have passed local tests and ARM builds but still need on-device
-validation, so compatibility with every model is not guaranteed.
+**Testing status:** this fork has only been tried on one Kobo. See the
+[validation status and known limitations](AGENTS.md#etat-de-validation) before
+relying on it.
 
 ## Step 2 — Install the plugin
 
