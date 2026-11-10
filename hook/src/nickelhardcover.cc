@@ -20,6 +20,10 @@ static QString (*Content__getAttribution)(Volume *_this);
 static bool (*Content__isFullBookAccessible)(Volume *_this);
 static bool (*Volume__isInstapaper)(Volume *_this);
 
+typedef void Device;
+static Device *(*Device__getCurrentDevice)();
+static QString (*Device__getDeviceClassString)(Device *_this);
+
 typedef QList<QPair<QString, QString>> SupportedLocales;
 static SupportedLocales *(*SupportedLocales__supportedLocales)(SupportedLocales *_this, bool b1);
 
@@ -157,6 +161,20 @@ PowerTimer *construct_PowerTimer(QString const &name, QObject *parent) {
   return timer;
 }
 
+static QString deviceModel;
+static bool deviceModelLoaded = false;
+
+QString getDeviceModel() {
+  // The device never changes while Nickel runs, so look it up once.
+  if (!deviceModelLoaded) {
+    deviceModelLoaded = true;
+    Device *device = Device__getCurrentDevice && Device__getDeviceClassString ? Device__getCurrentDevice() : nullptr;
+    if (device != nullptr)
+      deviceModel = Device__getDeviceClassString(device);
+  }
+  return deviceModel;
+}
+
 static struct nh_info NickelHardcover = (struct nh_info){.name = "NickelHardcover",
                                                          .desc = "Updates reading progress on Hardcover.app",
                                                          .uninstall_flag = "/mnt/onboard/nickelhardcover_uninstall",
@@ -177,6 +195,8 @@ static struct nh_dlsym NickelHardcoverDlsym[] = {
   { .name = "_ZNK7Content14getAttributionEv",                                  .out = nh_symoutptr(Content__getAttribution) },
   { .name = "_ZNK7Content20isFullBookAccessibleEv",                            .out = nh_symoutptr(Content__isFullBookAccessible) },
   { .name = "_ZNK6Volume12isInstapaperEv",                                     .out = nh_symoutptr(Volume__isInstapaper), .desc = "", .optional = true  },
+  { .name = "_ZN6Device16getCurrentDeviceEv",                                  .out = nh_symoutptr(Device__getCurrentDevice), .desc = "Readwise session device model", .optional = true },
+  { .name = "_ZNK6Device20getDeviceClassStringEv",                             .out = nh_symoutptr(Device__getDeviceClassString), .desc = "Readwise session device model", .optional = true },
 
   { .name = "_ZN20MainWindowController14sharedInstanceEv",                     .out = nh_symoutptr(MainWindowController__sharedInstance) },
   { .name = "_ZNK20MainWindowController11currentViewEv",                       .out = nh_symoutptr(MainWindowController__currentView) },

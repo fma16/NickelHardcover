@@ -6,7 +6,7 @@
 #include <QUuid>
 
 void ReadwiseSessions::begin(const QString &contentId, const QString &title, const QString &author,
-                             const QString &linkedId, bool publish, int progress) {
+                             const QString &linkedId, const QString &deviceModel, bool publish, int progress) {
   if (active())
     return;
   started = QDateTime::currentDateTimeUtc();
@@ -15,6 +15,8 @@ void ReadwiseSessions::begin(const QString &contentId, const QString &title, con
   data.insert("content_id", contentId);
   data.insert("title", title);
   data.insert("author", author);
+  if (!deviceModel.isEmpty())
+    data.insert("device_model", deviceModel);
   data.insert("publish_to_feed", publish);
   data.insert("started_at", started.toString("yyyy-MM-dd'T'HH:mm:ss.zzz'Z'"));
   data.insert("percent_at_start", startProgress / 100.0);

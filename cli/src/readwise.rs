@@ -48,6 +48,9 @@ struct Session {
   content_id: String,
   title: String,
   author: String,
+  // Absent from sessions queued before this field existed or when Nickel does not export the name.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  device_model: Option<String>,
   linked_id: Option<i64>,
   book_id: Option<i64>,
   started_at: Timestamp,
@@ -321,6 +324,14 @@ impl Client {
       fs::write(&sending, serde_json::to_vec(&session)?)?;
       fs::File::open(&sending)?.sync_all()?;
       fs::File::open(&spool)?.sync_all()?;
+      let mut device = json!({"type": "E-Reader", "vendor": "Kobo"});
+      // The feed shows only the model, so keep Nickel's full name such as "Kobo Libra Colour".
+      // Readwise rejects a model outside 1 to 100 characters.
+      if let Some(model) = session.device_model.as_deref().map(str::trim)
+        && (1..=100).contains(&model.chars().count())
+      {
+        device["model"] = model.into();
+      }
       let outcome = self.batch(
         "POST",
         "/sessions",
@@ -328,7 +339,7 @@ impl Client {
           "book_id": id, "started_at": session.started_at, "ended_at": session.ended_at,
           "format": "ebook", "percent_at_start": session.percent_at_start,
           "percent_at_end": session.percent_at_end, "publish_to_feed": session.publish_to_feed,
-          "device": {"type": "E-Reader", "vendor": "Kobo"}
+          "device": device
         }),
       );
       match outcome {

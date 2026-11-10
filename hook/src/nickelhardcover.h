@@ -38,6 +38,9 @@ extern WirelessManager *(*WirelessManager__sharedInstance)();
 
 extern int (*ReadingView__getCalculatedReadProgress)(QWidget *_this);
 
+// Nickel's marketing name, such as "Kobo Libra Colour"; empty when this firmware does not export it.
+QString getDeviceModel();
+
 typedef QFrame ComboButton;
 extern void (*ComboButton__addItem)(ComboButton *_this, QString const &label, QVariant const &data, bool);
 extern void (*ComboButton__renameItem)(ComboButton *_this, int index, QString const &label);

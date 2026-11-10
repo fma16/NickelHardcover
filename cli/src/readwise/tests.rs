@@ -186,7 +186,10 @@ fn sync_preserves_real_times_fractions_and_privacy_and_never_replays_accepted_se
   assert!(path.with_extension("sent").exists());
   fixture.sync().unwrap();
   fixture.sync().unwrap();
-  fixture.queue("02", 1.0);
+  let path = fixture.queue("02", 1.0);
+  let mut session: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+  session["device_model"] = "Kobo Libra Colour".into();
+  fs::write(&path, session.to_string()).unwrap();
   fixture.sync().unwrap();
   let requests = server.requests();
   assert_eq!(requests.len(), 7);
@@ -223,6 +226,10 @@ fn sync_preserves_real_times_fractions_and_privacy_and_never_replays_accepted_se
   assert_eq!(requests[5].0, "POST /books/api/v1/sessions HTTP/1.1");
   assert_eq!(requests[5].1["items"][0]["book_id"], 4_790_033);
   assert_eq!(requests[5].1["items"][0]["publish_to_feed"], true);
+  assert_eq!(
+    requests[5].1["items"][0]["device"],
+    json!({"type": "E-Reader", "vendor": "Kobo", "model": "Kobo Libra Colour"})
+  );
   assert_eq!(
     requests[6].1,
     json!({"items": [{"id": 4790033, "status": "finished", "finished_reading_at": "2026-09-10T20:58:35Z"}]})

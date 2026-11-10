@@ -10,7 +10,7 @@ class ReadwiseSessions {
 public:
   explicit ReadwiseSessions(const QString &directory) : directory(directory) {}
   void begin(const QString &contentId, const QString &title, const QString &author, const QString &linkedId,
-             bool publish, int progress);
+             const QString &deviceModel, bool publish, int progress);
   void observe(int progress) {
     if (!data.contains("ended_at"))
       endProgress = qBound(0, progress, 100);

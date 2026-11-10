@@ -146,7 +146,7 @@ void SyncController::beginReadwiseSession(QWidget *view) {
   if (!settings->isReadwise() || !settings->isSignedIn() || notRealBook || view->objectName() != "ReadingView")
     return;
   BookInfo book = getBookInfo(contentId);
-  readwise.begin(contentId, book.title, book.author, settings->getLinkedId(contentId),
+  readwise.begin(contentId, book.title, book.author, settings->getLinkedId(contentId), getDeviceModel(),
                  settings->publishReadwiseSessions(), ReadingView__getCalculatedReadProgress(view));
 }
 

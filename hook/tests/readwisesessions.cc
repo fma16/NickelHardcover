@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
   QTemporaryDir dir;
   assert(dir.isValid());
   ReadwiseSessions sessions(dir.path());
-  sessions.begin("book-a", "Title", "Author", "4790033", false, 41);
+  sessions.begin("book-a", "Title", "Author", "4790033", "Kobo Libra Colour", false, 41);
   QThread::msleep(10);
   sessions.observe(44);
   assert(sessions.finish(true));
@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
   QJsonObject data = QJsonDocument::fromJson(file.readAll()).object();
   assert(data["content_id"] == "book-a");
   assert(data["linked_id"].toDouble() == 4790033);
+  assert(data["device_model"] == "Kobo Libra Colour");
   assert(data["percent_at_start"].toDouble() == 0.41);
   assert(data["percent_at_end"].toDouble() == 0.44);
   assert(!data["publish_to_feed"].toBool());
@@ -33,7 +34,7 @@ int main(int argc, char **argv) {
   QString firstEnd = data["ended_at"].toString();
 
   QThread::msleep(30); // Simulates leaving ReadingView/sleeping; not reading time.
-  sessions.begin("book-b", "Other", "Writer", "", true, 0);
+  sessions.begin("book-b", "Other", "Writer", "", "", true, 0);
   sessions.observe(1);
   QThread::msleep(10);
   assert(sessions.finish(true));
@@ -47,15 +48,16 @@ int main(int argc, char **argv) {
   assert(data["percent_at_end"].toDouble() == 0.01);
   assert(data["publish_to_feed"].toBool());
   assert(!data.contains("linked_id"));
+  assert(!data.contains("device_model")); // Firmware without the Nickel symbol.
   assert(data["started_at"].toString() > firstEnd);
 
   for (int end : {44, 40}) {
-    sessions.begin("book-c", "Title", "Author", "", false, 44);
+    sessions.begin("book-c", "Title", "Author", "", "", false, 44);
     sessions.observe(end);
     QThread::msleep(2);
     assert(sessions.finish(true));
   }
-  sessions.begin("book-c", "Title", "Author", "", false, 44);
+  sessions.begin("book-c", "Title", "Author", "", "", false, 44);
   sessions.observe(50);
   assert(sessions.finish(false)); // Auto-sync disabled: do not persist.
   assert(QDir(dir.path()).entryList({"*.json"}, QDir::Files).size() == 2);
@@ -64,7 +66,7 @@ int main(int argc, char **argv) {
   assert(blocked.open(QIODevice::WriteOnly));
   blocked.close();
   ReadwiseSessions failure(blocked.fileName());
-  failure.begin("book-d", "Title", "Author", "", false, 98);
+  failure.begin("book-d", "Title", "Author", "", "", false, 98);
   failure.observe(99);
   QThread::msleep(2);
   assert(!failure.finish(true));
