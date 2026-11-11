@@ -1,5 +1,5 @@
 [env]
-VERSION = '{{ exec(command="git describe --tags --always --long --dirty 2>/dev/null") }}'
+VERSION = '{{ exec(command="git describe --tags --always --dirty 2>/dev/null") }}'
 
 [tasks.build]
 description = 'Build KoboRoot.tgz within the NickelTC docker container'

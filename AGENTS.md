@@ -117,6 +117,14 @@ La commande directe `mise run build` utilise l'image `strayrose/nickeltc` via la
 tâche `toolchain`, pas l'image locale `bookwise-nickeltc` construite ci-dessus.
 Ne pas confondre ces deux chemins de compilation.
 
+`VERSION` (affichée dans Settings et par `cli --version`) vient de
+`git describe --tags --always --dirty`. Une archive de release doit être compilée
+depuis son tag, sans modification locale, pour afficher seulement `v0.1.0` ;
+toute autre compilation est une version de test et affiche le commit, par exemple
+`v0.1.0-3-gac38ef4` ou `…-dirty`. En compilant hors de mise, passer cette même
+valeur au conteneur (`-e VERSION=…`), et supprimer `hook/libhardcover.so` et les
+`.o` si elle change : `make` ne recompile pas pour un simple changement de version.
+
 L'archive doit contenir les trois fichiers utiles suivants, sans jeton ni
 configuration personnelle :
 
