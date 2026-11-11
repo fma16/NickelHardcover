@@ -53,7 +53,9 @@ book** (putting the Kobo to sleep counts as closing).
 
 Already comfortable with Kobo plugins? Here is the whole process in short:
 
-1. Copy `KoboRoot.tgz` (built from this fork) into `.kobo/` on your Kobo and eject it.
+1. Download `KoboRoot.tgz` from the
+   [latest release](https://github.com/fma16/NickelHardcover/releases/latest),
+   copy it into `.kobo/` on your Kobo and eject it.
 2. Edit `.adds/NickelHardcover/config.ini` and set `provider` to `dual`,
    `hardcover` or `readwise`.
 3. For Readwise, paste your token from <https://readwise.io/access_token> into
@@ -73,12 +75,13 @@ You need:
 - [ ] A **Hardcover** account and/or a **Readwise** account with access to
       Readwise Books.
 - [ ] Wi-Fi on the Kobo to upload data (reading offline works fine).
-- [ ] A **`KoboRoot.tgz` built from this fork**.
+- [ ] The **`KoboRoot.tgz` of this fork**.
 
-> **Where do I get `KoboRoot.tgz`?** No public download is provided for this fork
-> yet. Downloads from the original NickelHardcover project **do not include
-> Readwise**. Have the archive built from this repository, or follow the
-> developer [build instructions](AGENTS.md#compilation-pour-kobo).
+> **Where do I get `KoboRoot.tgz`?** Download it from the
+> [latest release](https://github.com/fma16/NickelHardcover/releases/latest) of
+> this fork. Downloads from the original NickelHardcover project **do not include
+> Readwise**. To build it yourself, follow the developer
+> [build instructions](AGENTS.md#compilation-pour-kobo).
 
 **Testing status:** this fork has only been tried on one Kobo. See the
 [validation status and known limitations](AGENTS.md#etat-de-validation) before
