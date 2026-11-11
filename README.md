@@ -3,9 +3,11 @@
 Sync your Kobo reading with **Hardcover**, **Readwise Books**, or **both at once**,
 straight from the reading menu.
 
+> [!NOTE]
 > This is a fork of [StrayRose's NickelHardcover](https://codeberg.org/StrayRose/NickelHardcover).
 > It keeps every Hardcover feature and adds Readwise Books.
 
+> [!WARNING]
 > **Before you start**
 >
 > - This is an **experimental release**. Back up your Kobo data before installing.
