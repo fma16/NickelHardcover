@@ -142,6 +142,10 @@ existing `access_token`, `refresh_token` and `token_expires_at` lines in
    code), and authorize access.
 4. Tap **Continue** on the Kobo.
 
+<img src="screenshots/menu-signed-out.png" alt="Plugin menu before signing in, with Sign in to Hardcover.app and Sign in to Readwise Books" width="320"> <img src="screenshots/signin-hardcover.png" alt="Hardcover sign-in screen with a QR code and a pairing code" width="320">
+
+*Left: the menu in `dual` mode before signing in. Right: the Hardcover sign-in screen.*
+
 ## Step 5 — Connect Readwise Books
 
 *Skip this step in `hardcover` mode.*
@@ -149,6 +153,8 @@ existing `access_token`, `refresh_token` and `token_expires_at` lines in
 Readwise does not have a QR code sign-in yet: you copy a personal token into
 `config.ini` over USB. (In dual mode, the **Sign in to Readwise Books** menu
 entry reminds you of these steps.)
+
+<img src="screenshots/signin-readwise.png" alt="Readwise Books sign-in screen listing the personal token steps" width="320">
 
 1. On your computer, sign in to Readwise and open
    <https://readwise.io/access_token>. Copy your **personal token**.
@@ -208,8 +214,7 @@ the plugin icon **at the top right**. Menu labels are in English.
 
 <img src="screenshots/menu.png" alt="Plugin menu in the Kobo reading toolbar" width="320">
 
-*Screenshot from the original Hardcover-only project. In dual mode, Readwise
-entries are added at the bottom of this menu.*
+*The menu in `dual` mode, with both services signed in.*
 
 ### Which menu entry affects which service?
 
@@ -273,6 +278,10 @@ Readwise-only mode.
 **Hardcover:** choose **Manually link book**, then search for and select the book
 or edition. In dual mode this never replaces an existing Readwise link.
 
+<img src="screenshots/linking.png" alt="Manually link book: Hardcover search results with Select book and Editions buttons" width="320">
+
+*Hardcover search results. **Editions** picks a specific edition.*
+
 **Readwise:** the plugin finds the book by ISBN/ASIN, or by title and author if
 there is no ISBN. If it picks the wrong one:
 
@@ -304,6 +313,10 @@ separately.
 
 All keys go in `.adds/NickelHardcover/config.ini`. The plugin's **Settings**
 screen changes most of them for you.
+
+<img src="screenshots/settings.png" alt="Settings page 1: general options, Hardcover account and journal options, Readwise Books token" width="320"> <img src="screenshots/settings-auto-sync.png" alt="Settings page 2: auto-sync triggers and advanced logging options" width="320">
+
+*The Settings screen in `dual` mode: accounts on page 1, auto-sync on page 2.*
 
 | Key | Values | Meaning |
 | --- | --- | --- |
@@ -394,9 +407,8 @@ and to pgaskin for [NickelHook](https://github.com/pgaskin/NickelHook) and
 [NickelTC](https://github.com/pgaskin/NickelTC). The project is distributed under the
 [MIT license](LICENSE), with the original copyright preserved.
 
-The images in `screenshots/` come from the original Hardcover project and do not
-show the Readwise integration. Build instructions, tests, architecture and technical
-details are in [AGENTS.md](AGENTS.md).
+Build instructions, tests, architecture and technical details are in
+[AGENTS.md](AGENTS.md).
 
 ## TODO
 

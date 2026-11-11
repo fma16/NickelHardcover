@@ -21,7 +21,8 @@ sur l'installation et l'utilisation, avec les avertissements essentiels visibles
   ni recherche globale de catalogue, ni statut « en pause ». Ne pas réactiver
   ces fonctions en mode Readwise sans support documenté.
 - Le firmware Kobo 5.x n'est pas pris en charge. Les captures de `screenshots/`
-  sont celles de l'amont Hardcover, pas des preuves de rendu Readwise.
+  viennent d'une vraie Kobo en mode `dual` (build `33f2e66`) ; les refaire si
+  l'interface change.
 
 ## Organisation du code
 
