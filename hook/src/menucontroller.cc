@@ -99,6 +99,18 @@ void MenuController::showMainMenu() {
   QString contentId = syncController->contentId;
   Settings *settings = Settings::getInstance();
 
+  QList<Item> readwiseItems;
+  if (settings->isDual()) {
+    if (settings->isSignedIn(true)) {
+      readwiseItems = {
+          {settings->isEnabled(contentId, true) ? "Disable auto-sync (Readwise)" : "Enable auto-sync (Readwise)",
+           MenuOption::READWISE_ENABLED, false, syncController->notRealBook}};
+    } else {
+      readwiseItems = {{"Sign in to Readwise Books", MenuOption::READWISE_SIGNIN}};
+    }
+  }
+
+  // In dual mode, the Readwise entry follows the Hardcover auto-sync toggle (or the Readwise sync entry).
   QList<Item> items;
   if (settings->isSignedIn()) {
     items = {
@@ -108,6 +120,9 @@ void MenuController::showMainMenu() {
                                                                          : QString("Disable auto-sync")) +
              (settings->isDual() ? " (Hardcover)" : ""),
          MenuOption::TOGGLE_ENABLED, false, syncController->notRealBook},
+    };
+    items += readwiseItems;
+    items += {
         {settings->getLinkedId(contentId).isEmpty() ? "Manually link book" : "Unlink book", MenuOption::LINK},
         {"Update book status", MenuOption::BOOK_STATUS},
         {"Open reading journal", MenuOption::JOURNAL, false, settings->isReadwise()},
@@ -119,16 +134,10 @@ void MenuController::showMainMenu() {
     items = {{"Sign in to " + settings->serviceName(), MenuOption::SIGNIN}};
     if (settings->isDual() && settings->isSignedIn(true)) {
       items.append({"Sync now (Readwise Books)", MenuOption::SYNC_NOW, false, !syncController->isEnabled()});
+      items += readwiseItems;
       items.append({"Settings", MenuOption::SETTINGS});
-    }
-  }
-  if (settings->isDual()) {
-    if (settings->isSignedIn(true)) {
-      items.append(
-          {settings->isEnabled(contentId, true) ? "Disable auto-sync (Readwise)" : "Enable auto-sync (Readwise)",
-           MenuOption::READWISE_ENABLED, false, syncController->notRealBook});
     } else {
-      items.append({"Sign in to Readwise Books", MenuOption::READWISE_SIGNIN});
+      items += readwiseItems;
     }
   }
 
@@ -136,9 +145,15 @@ void MenuController::showMainMenu() {
   QWidget::connect(menu, &QMenu::aboutToHide, icon, [this] { setSelected(false); });
   QWidget::connect(menu, &QMenu::triggered, this, &MenuController::triggered);
 
+  int statusIndex = -1;
+  for (int i = 0; i < items.size(); i++) {
+    if (items[i].value.toInt() == MenuOption::BOOK_STATUS) {
+      statusIndex = i;
+    }
+  }
   QList<QLabel *> extraField = menu->findChildren<QLabel *>("extraField");
-  if (extraField.size() > 3 && extraField[3]) {
-    extraField[3]->setPixmap(QPixmap(Files::arrow_right));
+  if (statusIndex >= 0 && extraField.size() > statusIndex && extraField[statusIndex]) {
+    extraField[statusIndex]->setPixmap(QPixmap(Files::arrow_right));
   }
 }
 
