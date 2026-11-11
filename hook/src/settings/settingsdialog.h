@@ -28,7 +28,10 @@ private:
   PagedStack *pages = nullptr;
   MenuRow *username = nullptr;
 
+  MenuRow *buildAccount();
   QFrame *buildGeneral();
+  QFrame *buildHardcover();
+  QFrame *buildReadwise();
   QFrame *buildAutoSync();
   QFrame *buildQueuedProgress();
   QFrame *buildAdvanced();

@@ -163,7 +163,8 @@ void SettingsDialog::buildPages() {
   rows->setSpacing(0);
   rows->setContentsMargins(0, 0, 0, 0);
 
-  QList<QFrame *> sections = {buildGeneral(), buildAutoSync(), buildQueuedProgress(), buildAdvanced()};
+  QList<QFrame *> sections = {buildGeneral(),  buildHardcover(),      buildReadwise(),
+                              buildAutoSync(), buildQueuedProgress(), buildAdvanced()};
   int availableHeight = pages->getAvailableHeight();
   int pageHeight = 0;
 
@@ -203,33 +204,7 @@ QFrame *SettingsDialog::buildGeneral() {
   layout->addWidget(row);
   row->setProperty("noBorder", true);
 
-  username = new MenuRow("Loading…", MenuRowType::Tap, {{"Sign out", true}}, {}, true);
-  QObject::connect(username, &MenuRow::triggered, this, &SettingsDialog::signOut);
-  layout->addWidget(username);
-
   Settings *settings = Settings::getInstance();
-  if (settings->isSignedIn()) {
-    CLI *cli = CLI::getUser(true);
-    QObject::connect(cli, &CLI::response, this, &SettingsDialog::setUsername);
-  } else {
-    username->setHeading(settings->serviceName() + ": signed out");
-  }
-
-  if (settings->isDual()) {
-    bool signedIn = settings->isSignedIn(true);
-    MenuRow *readwise = new MenuRow(signedIn ? "Readwise Books: token configured" : "Readwise Books: signed out",
-                                    MenuRowType::Tap, {{signedIn ? "Sign out" : "Sign in", true}}, {}, true);
-    QObject::connect(readwise, &MenuRow::triggered, this, [this, settings, signedIn]() {
-      if (signedIn) {
-        settings->clearAccessToken(true);
-        closeDialog();
-      } else {
-        SignInDialog::show(true);
-      }
-    });
-    layout->addWidget(readwise);
-  }
-
   CheckboxRow *checkboxRow =
       new CheckboxRow("Enable auto-sync by default for new books", settings->getAutoSyncDefault());
   QObject::connect(checkboxRow, &CheckboxRow::triggered, settings, &Settings::setAutoSyncDefault);
@@ -239,8 +214,43 @@ QFrame *SettingsDialog::buildGeneral() {
   QObject::connect(checkboxRow, &CheckboxRow::triggered, settings, &Settings::setRetryOnNetwork);
   layout->addWidget(checkboxRow);
 
-  checkboxRow = new CheckboxRow("Sync Kobo annotations to the Hardcover.app journal", settings->getSyncAnnotations());
-  checkboxRow->setVisible(!settings->isReadwise());
+  return frame;
+}
+
+// Account row of the primary service (Hardcover in dual mode).
+MenuRow *SettingsDialog::buildAccount() {
+  username = new MenuRow("Loading…", MenuRowType::Tap, {{"Sign out", true}}, {}, true);
+  QObject::connect(username, &MenuRow::triggered, this, &SettingsDialog::signOut);
+  username->setProperty("noBorder", true);
+
+  Settings *settings = Settings::getInstance();
+  if (settings->isSignedIn()) {
+    CLI *cli = CLI::getUser(true);
+    QObject::connect(cli, &CLI::response, this, &SettingsDialog::setUsername);
+  } else {
+    username->setHeading(settings->serviceName() + ": signed out");
+  }
+
+  return username;
+}
+
+QFrame *SettingsDialog::buildHardcover() {
+  QFrame *frame = new QFrame(this);
+  QVBoxLayout *layout = new QVBoxLayout(frame);
+  layout->setSpacing(0);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  Settings *settings = Settings::getInstance();
+  if (!settings->usesService(false)) {
+    return frame;
+  }
+
+  layout->addWidget(new Label(Label::Avenir, "Hardcover"));
+
+  layout->addWidget(buildAccount());
+
+  CheckboxRow *checkboxRow =
+      new CheckboxRow("Sync Kobo annotations to the Hardcover.app journal", settings->getSyncAnnotations());
   QObject::connect(checkboxRow, &CheckboxRow::triggered, settings, &Settings::setSyncAnnotations);
   layout->addWidget(checkboxRow);
 
@@ -248,9 +258,43 @@ QFrame *SettingsDialog::buildGeneral() {
       "Journal entry privacy", MenuRowType::Menu,
       {{"Account default", "account"}, {"Public", "public"}, {"Follows", "follows"}, {"Private", "private"}}, {},
       settings->getJournalPrivacy());
-  menuRow->setVisible(!settings->isReadwise());
   QObject::connect(menuRow, &MenuRow::triggered, settings, &Settings::setJournalPrivacy);
   layout->addWidget(menuRow);
+
+  return frame;
+}
+
+QFrame *SettingsDialog::buildReadwise() {
+  QFrame *frame = new QFrame(this);
+  QVBoxLayout *layout = new QVBoxLayout(frame);
+  layout->setSpacing(0);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  Settings *settings = Settings::getInstance();
+  if (!settings->usesService(true)) {
+    return frame;
+  }
+
+  layout->addWidget(new Label(Label::Avenir, "Readwise Books"));
+
+  if (!settings->isDual()) {
+    layout->addWidget(buildAccount());
+    return frame;
+  }
+
+  bool signedIn = settings->isSignedIn(true);
+  MenuRow *readwise = new MenuRow(signedIn ? "Token configured" : "Signed out", MenuRowType::Tap,
+                                  {{signedIn ? "Sign out" : "Sign in", true}}, {}, true);
+  QObject::connect(readwise, &MenuRow::triggered, this, [this, settings, signedIn]() {
+    if (signedIn) {
+      settings->clearAccessToken(true);
+      closeDialog();
+    } else {
+      SignInDialog::show(true);
+    }
+  });
+  readwise->setProperty("noBorder", true);
+  layout->addWidget(readwise);
 
   return frame;
 }
