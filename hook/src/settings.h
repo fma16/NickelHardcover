@@ -63,6 +63,8 @@ public:
 
   void setSyncAnnotations(bool value) { config->setValue("sync_annotations", value); }
   bool getSyncAnnotations() const { return config->value("sync_annotations", false).toBool(); }
+  void setReadwiseSyncAnnotations(bool value) { config->setValue("readwise_sync_annotations", value); }
+  bool getReadwiseSyncAnnotations() const { return config->value("readwise_sync_annotations", false).toBool(); }
 
   void setSyncOnClose(const QVariant &value) { config->setValue("sync_on_close", value); }
   int getSyncOnClose() const;

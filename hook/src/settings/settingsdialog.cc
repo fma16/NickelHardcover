@@ -279,22 +279,26 @@ QFrame *SettingsDialog::buildReadwise() {
 
   if (!settings->isDual()) {
     layout->addWidget(buildAccount());
-    return frame;
+  } else {
+    bool signedIn = settings->isSignedIn(true);
+    MenuRow *readwise = new MenuRow(signedIn ? "Token configured" : "Signed out", MenuRowType::Tap,
+                                    {{signedIn ? "Sign out" : "Sign in", true}}, {}, true);
+    QObject::connect(readwise, &MenuRow::triggered, this, [this, settings, signedIn]() {
+      if (signedIn) {
+        settings->clearAccessToken(true);
+        closeDialog();
+      } else {
+        SignInDialog::show(true);
+      }
+    });
+    readwise->setProperty("noBorder", true);
+    layout->addWidget(readwise);
   }
 
-  bool signedIn = settings->isSignedIn(true);
-  MenuRow *readwise = new MenuRow(signedIn ? "Token configured" : "Signed out", MenuRowType::Tap,
-                                  {{signedIn ? "Sign out" : "Sign in", true}}, {}, true);
-  QObject::connect(readwise, &MenuRow::triggered, this, [this, settings, signedIn]() {
-    if (signedIn) {
-      settings->clearAccessToken(true);
-      closeDialog();
-    } else {
-      SignInDialog::show(true);
-    }
-  });
-  readwise->setProperty("noBorder", true);
-  layout->addWidget(readwise);
+  CheckboxRow *checkboxRow =
+      new CheckboxRow("Sync Kobo highlights to Readwise", settings->getReadwiseSyncAnnotations());
+  QObject::connect(checkboxRow, &CheckboxRow::triggered, settings, &Settings::setReadwiseSyncAnnotations);
+  layout->addWidget(checkboxRow);
 
   return frame;
 }

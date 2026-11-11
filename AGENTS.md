@@ -20,6 +20,18 @@ sur l'installation et l'utilisation, avec les avertissements essentiels visibles
 - Cette API ne propose ni création de surlignages/notes, ni journal Hardcover,
   ni recherche globale de catalogue, ni statut « en pause ». Ne pas réactiver
   ces fonctions en mode Readwise sans support documenté.
+- Seule exception : avec `readwise_sync_annotations`, les surlignages Kobo du
+  livre synchronisé partent vers `POST /api/v2/highlights/` de l'
+  [API classique](https://readwise.io/api_deets) (même jeton), après la file des
+  sessions et même si elle est bloquée. Readwise déduplique par
+  titre/auteur/texte/`source_url` : tout renvoyer à chaque synchronisation est
+  sans risque. Cette clé ignore la note : comme pour le journal Hardcover, la CLI
+  liste ensuite les surlignages du livre Readwise (`GET ?book_id=`, 20/min),
+  les associe par texte et seconde de création, puis corrige les notes par
+  `PATCH`. L'ID du livre vient de la réponse du `POST`, sinon de la table
+  `highlight_books` de `readwise.sqlite`. Les suppressions sur la Kobo ne sont
+  pas répercutées, et rien ne garantit que ces surlignages apparaissent dans
+  Readwise Books. Ce réglage est distinct de `sync_annotations` (Hardcover).
 - Le firmware Kobo 5.x n'est pas pris en charge. Les captures de `screenshots/`
   viennent d'une vraie Kobo en mode `dual` (build `33f2e66`) ; les refaire si
   l'interface change.
@@ -35,7 +47,7 @@ sur l'installation et l'utilisation, avec les avertissements essentiels visibles
 | `hook/src/cli.cc`, `cli/src/messages.rs` | Communication entre le plugin Qt et la CLI Rust |
 | `cli/qt_codegen/` | Génération de `hook/src/messages.h` à partir des messages Rust |
 | `cli/src/main.rs`, `cli/src/commands/` | Commandes et sélection du fournisseur |
-| `cli/src/readwise.rs`, `cli/src/readwise/tests.rs` | Client Books, cache, livraison des sessions et tests HTTP locaux |
+| `cli/src/readwise.rs`, `cli/src/readwise/tests.rs` | Client Books, cache, livraison des sessions, envoi des surlignages (API v2) et tests HTTP locaux |
 | `cli/src/hardcover.rs`, `cli/src/graphql/` | Intégration Hardcover conservée |
 | `cli/src/epub.rs`, `cli/src/isbn.rs`, `cli/src/database.rs` | Métadonnées, identifiants et données Kobo |
 | `hook/tests/readwisesessions.cc` | Tests natifs Qt de capture des sessions |

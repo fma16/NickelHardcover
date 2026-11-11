@@ -1,8 +1,9 @@
 //! Readwise Books v1. Session POSTs are deliberately never retried after an
 //! ambiguous response: the API has no idempotency key or duplicate detection.
+//! Kobo highlights go to the classic Readwise API (v2), which deduplicates them.
 use std::{fs, path::PathBuf, time::Duration};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -12,11 +13,14 @@ use ureq::Agent;
 use crate::{
   appcontext::AppContext,
   config::Config,
+  database::{get_bookmarks, get_title_author},
   messages::{Messages, SearchPages, SearchResult, User, UserBook},
   utils::{ExpectedError, normalize_identifiers, send_msg},
 };
 
 const BASE: &str = "https://readwise.io/books/api/v1";
+// Same host and token as Books: https://readwise.io/api_deets
+const HIGHLIGHTS: &str = "/api/v2/highlights/";
 
 #[cfg(test)]
 mod tests;
@@ -120,7 +124,11 @@ impl Client {
         retryable: true,
       });
     }
-    let url = format!("{}{path}", self.base);
+    let url = if path.starts_with("/api/v2/") {
+      format!("{}{path}", self.base.trim_end_matches("/books/api/v1"))
+    } else {
+      format!("{}{path}", self.base)
+    };
     let auth = format!("Token {}", self.token);
     let response = match method {
       "GET" => self.agent.get(&url).header("Authorization", &auth).call(),
@@ -428,6 +436,127 @@ impl Client {
     }
     Ok(())
   }
+
+  /// Sends every visible Kobo highlight of the book on each sync. Readwise
+  /// deduplicates by title, author, text and source URL, so a resend or a retry
+  /// after an uncertain outcome creates nothing new.
+  fn send_highlights(&self, context: &mut AppContext, content_id: &str) -> Result<()> {
+    let mut bookmarks = get_bookmarks(context, content_id)?;
+    bookmarks.retain(|b| !b.text.trim().is_empty());
+    if bookmarks.is_empty() {
+      return Ok(());
+    }
+    bookmarks.sort_by_key(|b| b.date_created);
+    let (title, author) = get_title_author(context, content_id)?;
+    // Without a title Readwise files highlights under a generic "Quotes" book.
+    ensure!(
+      !title.trim().is_empty(),
+      "Kobo has no title for this book; its highlights were not sent."
+    );
+    // Documented maximum lengths; a longer field would reject the whole request.
+    let limit = |text: &str, max: usize| text.trim().chars().take(max).collect::<String>();
+    let highlights: Vec<Value> = bookmarks
+      .iter()
+      .map(|bookmark| {
+        let mut item = json!({
+          "text": limit(&bookmark.text, 8191), "title": limit(&title, 511), "author": limit(&author, 1024),
+          "category": "books", "source_type": "bookwise_nickel", "highlighted_at": bookmark.date_created,
+        });
+        if let Some(note) = bookmark.annotation.as_deref().map(|n| limit(n, 8191))
+          && !note.is_empty()
+        {
+          item["note"] = note.into();
+        }
+        // Position in millionths of the book orders highlights stably as new ones arrive.
+        if let Some(location) = bookmark.location {
+          item["location"] = json!((location * 1_000_000.0).round() as i64);
+          item["location_type"] = "order".into();
+        }
+        item
+      })
+      .collect();
+    log::info!("Send {} Kobo highlights to Readwise", highlights.len());
+    let mut book_id = None;
+    for chunk in highlights.chunks(100) {
+      let response = self
+        .request("POST", HIGHLIGHTS, Some(json!({ "highlights": chunk })))
+        .map_err(|error| anyhow!("Kobo highlights: {error} The next sync sends them again."))?;
+      let books = response.as_array().context("Invalid Readwise highlights response")?;
+      book_id = book_id.or_else(|| books.iter().find_map(|b| b["id"].as_i64()).filter(|id| *id > 0));
+    }
+    self
+      .update_notes(content_id, book_id, &highlights)
+      .map_err(|error| anyhow!("Kobo highlight notes: {error} The next sync retries."))
+  }
+
+  /// Deduplication ignores notes, so edited notes are patched like Hardcover's
+  /// journal: match by text and creation second. Readwise may omit the book from
+  /// the POST reply when nothing was created, hence the cached ID.
+  fn update_notes(&self, content_id: &str, book_id: Option<i64>, highlights: &[Value]) -> Result<()> {
+    let db = Connection::open(self.directory.join("readwise.sqlite"))?;
+    db.busy_timeout(Duration::from_secs(35))?;
+    db.execute_batch(
+      "CREATE TABLE IF NOT EXISTS highlight_books (content_id TEXT PRIMARY KEY, book_id INTEGER NOT NULL)",
+    )?;
+    let book_id = if let Some(id) = book_id {
+      db.execute(
+        "INSERT OR REPLACE INTO highlight_books VALUES (?1, ?2)",
+        rusqlite::params![content_id, id],
+      )?;
+      id
+    } else if let Some(id) = db
+      .query_row(
+        "SELECT book_id FROM highlight_books WHERE content_id=?1",
+        [content_id],
+        |r| r.get(0),
+      )
+      .optional()?
+    {
+      id
+    } else {
+      log::info!("Readwise returned no highlights book; notes are checked at a later sync");
+      return Ok(());
+    };
+    let mut existing = Vec::new();
+    for page in 1.. {
+      let value = self.request(
+        "GET",
+        &format!("{HIGHLIGHTS}?book_id={book_id}&page_size=1000&page={page}"),
+        None,
+      )?;
+      existing.extend(
+        value["results"]
+          .as_array()
+          .context("Invalid Readwise highlights list")?
+          .iter()
+          .cloned(),
+      );
+      if value["next"].is_null() {
+        break;
+      }
+    }
+    let second = |at: &Value| {
+      at.as_str()
+        .and_then(|s| s.parse::<Timestamp>().ok())
+        .map(Timestamp::as_second)
+    };
+    for item in highlights {
+      let note = item["note"].as_str().unwrap_or("");
+      let Some(id) = existing
+        .iter()
+        .find(|h| {
+          h["text"].as_str().map(str::trim) == item["text"].as_str()
+            && second(&h["highlighted_at"]).is_some_and(|at| Some(at) == second(&item["highlighted_at"]))
+        })
+        .filter(|h| h["note"].as_str().unwrap_or("").trim() != note)
+        .and_then(|h| h["id"].as_i64())
+      else {
+        continue;
+      };
+      self.request("PATCH", &format!("{HIGHLIGHTS}{id}/"), Some(json!({ "note": note })))?;
+    }
+    Ok(())
+  }
 }
 
 pub fn sync(context: &mut AppContext, content_id: &str, linked_id: Option<i64>) -> Result<()> {
@@ -435,7 +564,17 @@ pub fn sync(context: &mut AppContext, content_id: &str, linked_id: Option<i64>) 
   if linked_id.is_some() {
     client.ensure_book(context, content_id, linked_id, "", "")?;
   }
-  client.flush(context)
+  let sessions = client.flush(context);
+  // Highlights are idempotent, so a blocked session queue must not hold them back.
+  // Queue drains without a book (content_id "") only flush sessions.
+  if context.config.readwise_sync_annotations && !content_id.is_empty() {
+    let highlights = client.send_highlights(context, content_id);
+    return match (sessions, highlights) {
+      (Err(sessions), Err(highlights)) => Err(anyhow!("{sessions} {highlights}")),
+      (sessions, highlights) => sessions.and(highlights),
+    };
+  }
+  sessions
 }
 
 pub fn get_user(context: &AppContext) -> Result<()> {

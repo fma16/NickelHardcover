@@ -383,11 +383,101 @@ fn config_keeps_hardcover_default_and_readwise_credentials_separate() {
   assert_eq!(config.provider, "hardcover");
   assert!(config.readwise_token.is_empty());
   assert!(config.readwise_publish_to_feed);
-  let config: Config = serini::from_str("provider = readwise\nreadwise_token = test-token\n").unwrap();
+  let config: Config =
+    serini::from_str("provider = readwise\nreadwise_token = test-token\nsync_annotations = true\n").unwrap();
+  // Hardcover's journal setting must not send highlights to Readwise.
+  assert!(!config.readwise_sync_annotations);
   assert!(config.readwise_publish_to_feed);
   let config: Config =
     serini::from_str("provider = readwise\nreadwise_token = test-token\nreadwise_publish_to_feed = false\n").unwrap();
   assert_eq!(config.provider, "readwise");
   assert!(config.access_token.is_empty());
   assert!(!config.readwise_publish_to_feed);
+}
+
+#[test]
+fn highlights_are_sent_in_order_resent_after_a_failure_and_edited_notes_are_patched() {
+  let created = (
+    200,
+    json!([{"id": 111, "title": "Moby Dick", "modified_highlights": [1337]}]).to_string(),
+  );
+  let listed = |whaling: Value, ishmael: Value| {
+    (
+      200,
+      json!({"count": 3, "next": null, "results": [
+        // Same second as a Kobo highlight but another text: must never be patched.
+        {"id": 7, "text": "From another app", "note": "x", "highlighted_at": "2026-09-10T20:14:05Z"},
+        {"id": 8, "text": "Whaling voyage", "note": whaling, "highlighted_at": "2026-09-10T20:14:05.379Z"},
+        {"id": 9, "text": "Call me Ishmael.", "note": ishmael, "highlighted_at": "2026-09-11T08:00:00Z"}
+      ]})
+      .to_string(),
+    )
+  };
+  let patched = (200, json!({"id": 8}).to_string());
+  let server = Server::new(vec![
+    (500, "{}".into()),
+    created,
+    listed("Old fate".into(), "Stale".into()),
+    patched.clone(),
+    patched,
+    // Nothing new: Readwise may omit the book, so the cached ID is used.
+    (200, "[]".into()),
+    listed("Fate".into(), Value::Null),
+  ]);
+  let mut fixture = Fixture::new(&server);
+  let book = "file:///mnt/onboard/moby.kepub.epub";
+  let kobo = fixture.client.directory.join("KoboReader.sqlite");
+  Connection::open(&kobo)
+    .unwrap()
+    .execute_batch(&format!(
+      "CREATE TABLE content (ContentId TEXT, BookId TEXT, BookTitle TEXT, Title TEXT, Attribution TEXT,
+        WordCount INTEGER, VolumeIndex INTEGER, ISBN TEXT);
+      CREATE TABLE Bookmark (BookmarkID TEXT, VolumeID TEXT, ContentId TEXT, Text TEXT, Annotation TEXT,
+        DateCreated TEXT, DateModified TEXT, ChapterProgress REAL, Hidden TEXT);
+      INSERT INTO content VALUES ('{book}', NULL, NULL, 'Moby Dick', 'Herman Melville', -1, -1, NULL),
+        ('ch1', '{book}', 'Moby Dick', 'Loomings', NULL, 1000, 1, NULL),
+        ('ch2', '{book}', 'Moby Dick', 'The Carpet-Bag', NULL, 3000, 2, NULL);
+      INSERT INTO Bookmark VALUES
+        ('later', '{book}', 'ch2', '  Whaling voyage  ', 'Fate', '2026-09-10T20:14:05.000', '', 0.5, 'false'),
+        ('first', '{book}', 'ch1', 'Call me Ishmael.', '', '2026-09-11T08:00:00.000', '', 0.2, 'false'),
+        ('hidden', '{book}', 'ch1', 'Deleted on the Kobo', NULL, '2026-09-11T09:00:00.000', '', 0.3, 'true'),
+        ('blank', '{book}', 'ch1', '   ', NULL, '2026-09-11T09:30:00.000', '', 0.4, 'false');"
+    ))
+    .unwrap();
+  fixture.context.config.sqlite_path = kobo.to_string_lossy().into();
+
+  let error = fixture.client.send_highlights(&mut fixture.context, book).unwrap_err();
+  assert!(error.to_string().contains("next sync sends them again"));
+  fixture.client.send_highlights(&mut fixture.context, book).unwrap();
+  fixture.client.send_highlights(&mut fixture.context, book).unwrap();
+
+  let highlight = |text: &str, highlighted_at: &str, location: i64| {
+    json!({
+      "text": text, "title": "Moby Dick", "author": "Herman Melville", "category": "books",
+      "source_type": "bookwise_nickel", "highlighted_at": highlighted_at,
+      "location": location, "location_type": "order"
+    })
+  };
+  let mut later = highlight("Whaling voyage", "2026-09-10T20:14:05Z", 625_000);
+  later["note"] = "Fate".into();
+  let post = (
+    "POST /api/v2/highlights/ HTTP/1.1".to_string(),
+    json!({"highlights": [later, highlight("Call me Ishmael.", "2026-09-11T08:00:00Z", 50_000)]}),
+  );
+  let list = (
+    "GET /api/v2/highlights/?book_id=111&page_size=1000&page=1 HTTP/1.1".to_string(),
+    Value::Null,
+  );
+  assert_eq!(
+    server.requests(),
+    vec![
+      post.clone(),
+      post.clone(),
+      list.clone(),
+      ("PATCH /api/v2/highlights/8/ HTTP/1.1".into(), json!({"note": "Fate"})),
+      ("PATCH /api/v2/highlights/9/ HTTP/1.1".into(), json!({"note": ""})),
+      post,
+      list,
+    ]
+  );
 }

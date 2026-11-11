@@ -37,7 +37,8 @@ straight from the reading menu.
 | Reading session duration | — | ✅ |
 | Status, star rating, review | ✅ | ✅ in Readwise-only mode |
 | “Paused” status | ✅ | — |
-| Reading journal and annotations (highlights, notes) | ✅ | — |
+| Reading journal | ✅ | — |
+| Kobo highlights and notes | ✅ in the journal | ✅ in your Readwise highlights library (optional) |
 | Sign-in on the Kobo with a QR code | ✅ | — (token copied over USB) |
 | Offline sessions kept across restarts | — (kept in memory only) | ✅ |
 
@@ -47,9 +48,14 @@ upload queue, so a failure on one never undoes a successful sync on the other.
 You can sync **on demand**, **automatically while reading**, or **when you close a
 book** (putting the Kobo to sleep counts as closing).
 
-> The Readwise integration uses **Readwise Books**. It does not use Readwise
-> Reader or the Readwise highlights API, so your Kobo highlights are not sent to
-> Readwise.
+> The Readwise integration uses **Readwise Books** for progress and sessions.
+> The Books API cannot store highlights, so the optional highlight sync
+> (`readwise_sync_annotations`) uses the [classic Readwise API](https://readwise.io/api_deets)
+> with the same token. Highlights land in your Readwise highlights library
+> (Daily Review, exports), not necessarily on the book's page in Readwise Books.
+> Readwise skips highlights it already has, so each sync resends them safely. As
+> with Hardcover, a note added, edited or removed on the Kobo is updated in
+> Readwise at the next sync, but deleting a highlight on the Kobo does not delete it.
 
 ## Quick start
 
@@ -174,6 +180,9 @@ entry reminds you of these steps.)
 
    ; Sessions appear in your Readwise Books feed. Set to false to hide them.
    readwise_publish_to_feed = true
+
+   ; Also send your Kobo highlights and notes to Readwise. Off by default.
+   readwise_sync_annotations = false
 
    ; Recommended automatic sync settings (explained in "Settings reference").
    auto_sync_default = false
@@ -328,6 +337,7 @@ screen changes most of them for you.
 | `provider` | `hardcover` (default), `readwise`, `dual` | Services to sync |
 | `readwise_token` | your personal token | Readwise sign-in |
 | `readwise_publish_to_feed` | `true` (default), `false` | Show sessions in your Readwise Books feed |
+| `readwise_sync_annotations` | `true`, `false` (default) | Send the open book's Kobo highlights and notes to Readwise at each Readwise sync |
 | `auto_sync_default` | `true`, `false` | Turn auto-sync on automatically for new books |
 | `retry_on_network` | `true`, `false` | Retry failed uploads when Wi-Fi reconnects |
 | `sync_on_close` | `1`–`99`, `-1` = off | Sync on close/sleep after this many percentage points of progress |
