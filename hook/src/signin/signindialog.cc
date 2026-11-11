@@ -18,12 +18,7 @@ SignInDialog::SignInDialog(bool readwise)
   layout->setContentsMargins(0, 0, 0, 0);
 
   if (readwise) {
-    Label *help = new Label(Label::Small,
-                            "Visit readwise.io/access_token on your computer.<br><br>Connect the Kobo by USB and set "
-                            "readwise_token in .adds/NickelHardcover/config.ini.<br><br>Keep your token private. "
-                            "Eject the Kobo and reopen your book.");
-    help->setWordWrap(true);
-    layout->addWidget(help);
+    buildReadwiseHelp(layout);
     return;
   }
 
@@ -33,6 +28,72 @@ SignInDialog::SignInDialog(bool readwise)
   CLI *cli = CLI::oauthRequest();
   QObject::connect(cli, &CLI::response, this, &SignInDialog::response);
   QObject::connect(cli, &CLI::failure, this, &SignInDialog::closeDialog);
+}
+
+void SignInDialog::buildReadwiseHelp(QVBoxLayout *layout) {
+  QFrame *frame = new QFrame(this);
+  frame->setObjectName("readwiseHelp");
+  // Side margins match the Settings dialog; gaps between steps scale with the device.
+  frame->setStyleSheet(R"(
+    [qApp_deviceIsTrilogy=true] #readwiseHelp { margin: 0 36px; }
+    [qApp_deviceIsPhoenix=true] #readwiseHelp { margin: 0 48px; }
+    [qApp_deviceIsDragon=true] #readwiseHelp { margin: 0 66px; }
+    [qApp_deviceIsStorm=true] #readwiseHelp { margin: 0 75px; }
+    [qApp_deviceIsDaylight=true] #readwiseHelp { margin: 0 84px; }
+
+    [qApp_deviceIsTrilogy=true] Label[gap=true] { padding-bottom: 18px; }
+    [qApp_deviceIsPhoenix=true] Label[gap=true] { padding-bottom: 24px; }
+    [qApp_deviceIsDragon=true] Label[gap=true] { padding-bottom: 33px; }
+    [qApp_deviceIsStorm=true] Label[gap=true] { padding-bottom: 38px; }
+    [qApp_deviceIsDaylight=true] Label[gap=true] { padding-bottom: 42px; }
+  )");
+
+  QVBoxLayout *box = new QVBoxLayout(frame);
+  box->setContentsMargins(0, 0, 0, 0);
+  box->setSpacing(0);
+
+  Label *intro = new Label(Label::Medium, "Readwise Books uses a personal access token instead of a QR code.");
+  intro->setWordWrap(true);
+  intro->setProperty("gap", true);
+  box->addWidget(intro);
+
+  QStringList steps = {
+      "On your computer, open <b>readwise.io/access_token</b> and copy your token.",
+      "Connect the Kobo by USB and open <b>.adds/NickelHardcover/config.ini</b>.",
+      "Set <b>readwise_token&nbsp;=&nbsp;</b><i>your token</i> on its own line, without a leading <b>;</b>",
+      "Eject the Kobo, then reopen your book.",
+  };
+  for (int i = 0; i < steps.size(); i++) {
+    QHBoxLayout *row = new QHBoxLayout();
+    row->setContentsMargins(0, 0, 0, 0);
+
+    Label *number = new Label(Label::Medium, QString("<b>%1.</b>").arg(i + 1));
+    number->setProperty("gap", true);
+    row->addWidget(number, 0, Qt::AlignTop);
+
+    Label *text = new Label(Label::Medium, steps[i]);
+    text->setWordWrap(true);
+    text->setProperty("gap", true);
+    row->addWidget(text, 1, Qt::AlignTop);
+
+    box->addLayout(row);
+  }
+
+  Label *note = new Label(Label::Small, "Keep this token private: it gives access to your Readwise account.");
+  note->setWordWrap(true);
+  note->setProperty("style", "italic");
+  note->setProperty("gap", true);
+  box->addWidget(note);
+
+  N3ButtonLabel *button = construct_N3ButtonLabel(this);
+  button->setProperty("primaryButton", true);
+  button->setText("Done");
+  box->addWidget(button, 0, Qt::AlignCenter);
+  QObject::connect(button, SIGNAL(tapped(bool)), dialog, SLOT(deleteLater()));
+
+  layout->addStretch(1);
+  layout->addWidget(frame);
+  layout->addStretch(2);
 }
 
 void SignInDialog::response(const Messages &message) {

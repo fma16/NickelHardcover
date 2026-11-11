@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QVBoxLayout>
+
 #include "../messages.h"
 #include "../settings.h"
 #include "../widgets/dialog.h"
@@ -16,6 +18,8 @@ public Q_SLOTS:
 
 private:
   SignInDialog(bool readwise);
+
+  void buildReadwiseHelp(QVBoxLayout *layout);
 
   void response(const Messages &message);
 
