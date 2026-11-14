@@ -375,15 +375,37 @@ screens. Leaving a book open without reading, or skipping pages, distorts it.
 Completed sessions are safe, but an abrupt shutdown can lose the session in
 progress.
 
-**A message asks me to check a pending Readwise session.**
-After a network interruption, the plugin may not know whether Readwise received a
-session. To avoid duplicates, it pauses **Readwise** uploads (Hardcover keeps
-working).
+**A message says Readwise uploads are paused.**
+The message names a file in `.adds/NickelHardcover/readwise-sessions/`. If it
+ends in `.sending`, the plugin does not know whether Readwise received that
+session, usually after a network interruption. If it ends in `.failed`, Readwise
+rejected the session or the plugin could not read it. To avoid duplicates and
+out-of-order progress, **Readwise** uploads stay paused until you resolve that
+file (Hardcover keeps working).
 
 1. **Do not delete the queue and do not force a resend.**
 2. Check in Readwise Books whether the session is there.
 3. Back up `.adds/NickelHardcover/`.
 4. Follow the [advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
+
+**A message asks me to check the Kobo clock.**
+The Kobo clock was ahead when the session was recorded, and Readwise refuses
+sessions that end in the future. The session stays queued with its original
+times and was not sent twice. Correct the Kobo's date and time, wait a few
+minutes (or until the UTC time shown in the message), then use **Sync now**.
+
+**A message says a Readwise library book is deleted.**
+The plugin never restores a book you deleted in Readwise. Its sessions stay on
+the Kobo and pause **Readwise** uploads (Hardcover keeps working). Either
+restore the book in Readwise Books and sync again, or back up
+`.adds/NickelHardcover/` and follow the
+[advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
+
+**A message says a queued Readwise session is invalid.**
+The session file on the Kobo is damaged, incomplete or records no progress; the
+message says which. The plugin keeps it unchanged under the `.failed` name shown
+in the message and pauses **Readwise** uploads. Do not rename it back: follow the
+[advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
 
 **Can I switch to another Readwise account?**
 Not by just replacing the token: sessions from the old account could be sent to

@@ -81,7 +81,11 @@ contrôles natifs Linux, **pas la toolchain de compilation pour Kobo**.
 4. Compile et exécute les tests Qt de capture des sessions.
 5. Exécute `scripts/check-dual-sync` : contrôleur, files, réglages et capture réels,
    avec chemins de stockage temporaires, vues Nickel et résultats CLI simulés.
-6. Vérifie la syntaxe de toutes les sources C++ avec les bibliothèques Qt natives.
+6. Exécute `hook/tests/check-cli` : le vrai `hook/src/cli.cc` lance par `QProcess`
+   une CLI factice (absente, non exécutable, plantée, ou émettant des erreurs JSON)
+   et vérifie les dialogues, le mode silencieux et l'état des files.
+7. Compile et exécute les tests de sécurité des couvertures (`hook/tests/cover.cc`).
+8. Vérifie la syntaxe de toutes les sources C++ avec les bibliothèques Qt natives.
 
 Le script ajoute `$HOME/.cargo/bin` au `PATH` et définit `VERSION=readwise-dev`
 si cette variable est absente. Il utilise le toolchain Cargo actif ; si nécessaire,
@@ -217,6 +221,29 @@ Ces essais ne retirent rien de la liste « non validé sur appareil ». Non couv
 sous émulation : critique et journal (HTTP 403, voir les limites de l'émulation),
 `retry_on_network`, annotations, `sync_on_schedule`.
 
+Les corrections de `ab0d832` (CLI) et `4405488` (plugin) ont ensuite été rejouées
+sur Nickel émulé avec les comptes de test (14 novembre 2026, même fil de revue) :
+
+- Hardcover seul injoignable en mode `dual` : un dialogue unique, Readwise reçoit
+  sa session, la progression Hardcover attend puis part au **Sync now** suivant,
+  sans doublon ;
+- livre supprimé dans Readwise : `GET /books?ids=…` renvoie bien
+  `status: "deleted"` ; `.json` puis `.sent` conservés avec un `GET` seul, reprise
+  après restauration, une seule session créée ;
+- fin de session environ 99 s en avance : Readwise répond HTTP 200 avec le rejet
+  `invalid_value`, message « Invalid value for body: Value error, times must not
+  be in the future » ; la session reste `.json` et part une fois l'heure passée ;
+- JSON tronqué et session sans progression : renommés `.failed` à l'identique,
+  session suivante intacte, Hardcover non bloqué.
+
+Limites de ces essais : l'état `.sent` a été reconstruit à la main, un seul écart
+d'horloge a été essayé (avec un décalage ajouté à `emushim.c` dans un autre orb,
+non versionné), et les messages ont été reformulés après ces essais ; seuls les
+refus locaux et celui du livre supprimé ont été recapturés avec leur nouveau
+texte. **Une auto-sync bloquée par la file Readwise n'affiche rien** : le blocage
+n'apparaît qu'au **Sync now** suivant. Ce défaut d'information est connu et non
+corrigé.
+
 L'archive du fil de double synchronisation a été compilée avec `strayrose/nickeltc:latest` (alors Cargo 1.97,
 Qt 5.2.1, sans mise), et non par exécution de toute la recette Dockerfile ci-dessus.
 Dans cet environnement, la compilation a utilisé depuis `cli/` :
@@ -321,6 +348,11 @@ Réseau et résultats :
   recréer avec `touch` rétablit la connexion.
 - Le signal `networkConnected` de Nickel n'est jamais émis : `retry_on_network`
   n'est pas testable. Déclencher la reprise par **Sync now**.
+- Simuler une panne de Hardcover seul : écrire `hosts: files dns` dans
+  `$EMU/rootfs/etc/nsswitch.conf` et `127.0.0.1 api.hardcover.app` dans
+  `$EMU/rootfs/etc/hosts`. La CLI échoue alors en `Network` sans toucher
+  Readwise. Supprimer les deux fichiers pour rétablir. Ce procédé n'a pas été
+  essayé sur `readwise.io`.
 - Vérifier côté services sans afficher de jeton :
   `scripts/nickel-emu/rw.py GET '/books/api/v1/sessions?limit=100'` et
   `scripts/nickel-emu/hc.py '<requête GraphQL>'`. La file et les journaux de la
@@ -374,6 +406,17 @@ Limites de l'émulation :
   `--linked-id` appartient alors à Hardcover ; Readwise utilise les associations
   de ses sessions et de son cache. Avec `--service`, cet identifiant appartient au
   service explicitement ciblé. Ne jamais persister ce choix ponctuel dans `config.ini`.
+- Le `error_code` d'une erreur CLI décide de l'action du hook (`hook/src/cli.cc`) ;
+  les variantes sont dans `ExpectedError` (`cli/src/utils.rs`). `Unauthorized`
+  ouvre le dialogue de connexion, `BookNotFound` propose de lier ou délier le
+  livre du fournisseur principal (Hardcover en mode `dual`) et `InvalidConfig`
+  propose une réinitialisation : la commande `update` de Readwise n'émet pas ces
+  codes mais `ReadwiseAuth`, `ReadwiseBookNotFound` et `ReadwiseSync`, affichés
+  sans action. `Network` (pannes de transport, délai de 30 s par requête, HTTP
+  408/500/502/503/504 côté Hardcover) est le seul code qui conserve la
+  progression en attente pour `retry_on_network` ; tout autre échec la retire de
+  la file en mémoire du hook. Une synchronisation silencieuse n'ouvre aucun
+  dialogue, quel que soit le code.
 - Une reprise de la file Readwise ne doit ni rejouer une session acceptée ni
   acquitter la progression d'un intervalle encore actif. Les résultats incertains
   bloquent Readwise seulement, pas Hardcover.
@@ -442,16 +485,34 @@ La file persistante est `.adds/NickelHardcover/readwise-sessions/` :
 
 | Extension | Signification | Action |
 | --- | --- | --- |
-| `.json` | Non envoyée ou refusée avec reprise possible (401/403/429) | Corriger le jeton/l'accès, respecter `Retry-After`, puis synchroniser |
+| `.json` | Non envoyée ou refusée avec reprise possible (401/403/429, fin de session dans le futur) | Corriger le jeton/l'accès ou l'horloge, respecter `Retry-After`, puis synchroniser |
 | `.sending` | Envoi commencé, résultat incertain ou interruption | Vérifier dans Readwise ; aucune relance automatique |
 | `.sent` | Session acceptée, statut du livre restant à mettre à jour | Synchroniser ; seul le `PATCH` du livre est rejoué |
-| `.failed` | Rejet explicite, même si HTTP 200 | Lire le motif (requête, code, champ) dans le message d'erreur ou `nickelhardcover_*.log`, corriger, puis remettre le fichier en `.json` |
+| `.failed` | Rejet explicite, même si HTTP 200, ou fichier `.json` illisible ou invalide | Lire le motif (requête, code, champ, ou nom du fichier) dans le message d'erreur ou `nickelhardcover_*.log`, corriger, puis remettre le fichier en `.json` |
 
 Un `.sending` ou `.failed` bloque la file Readwise, **pas Hardcover**, pour éviter
 de réappliquer une ancienne progression après une plus récente. Le verrou `readwise-sync.lock` empêche des
-vidages concurrents ; `readwise-retry-at` conserve le délai de reprise réseau.
+vidages concurrents. Les délais de reprise après un 429 sont séparés :
+`readwise-books-retry-at` pour l'API Books et `readwise-highlights-retry-at` pour
+les surlignages (API v2). Un ancien `readwise-retry-at` reste respecté par les
+deux jusqu'à son expiration.
 Préserver l'ordre chronologique et la persistance de l'accusé de réception avant
 la mise à jour du statut du livre.
+
+Trois cas ne sont pas des rejets définitifs et ne doivent pas le devenir :
+
+- **Horloge en avance.** Une session dont la fin est dans le futur n'est pas
+  envoyée. Si Readwise la rejette avec `invalid_value` et le message « times must
+  not be in the future », elle reste `.json` avec ses dates d'origine. Tout autre
+  libellé reste `.failed` : ne pas élargir cette reconnaissance sans rejet observé.
+- **Livre supprimé dans Readwise.** Pour une association déjà connue, la CLI lit
+  le statut avant d'envoyer une session ou de rejouer le `PATCH` d'un `.sent` et
+  refuse de restaurer un livre `deleted`. Les sessions sont conservées et
+  bloquent la file jusqu'à une restauration explicite par l'utilisateur. Une
+  suppression entre ce `GET` et le `PATCH` n'est pas couverte, ni la première
+  résolution d'un livre sans cache.
+- **Fichier illisible ou invalide.** Il est renommé `.failed` sans modification
+  de ses octets. Le remettre en `.json` sans le corriger le renomme à nouveau.
 
 Avant toute intervention, désactiver les synchronisations automatiques, attendre
 la fin d'un éventuel envoi, connecter la Kobo en USB et sauvegarder les fichiers.
