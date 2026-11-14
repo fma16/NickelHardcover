@@ -20,6 +20,18 @@ sur l'installation et l'utilisation, avec les avertissements essentiels visibles
 - Cette API ne propose ni création de surlignages/notes, ni journal Hardcover,
   ni recherche globale de catalogue, ni statut « en pause ». Ne pas réactiver
   ces fonctions en mode Readwise sans support documenté.
+- Seule exception : avec `readwise_sync_annotations`, les surlignages Kobo du
+  livre synchronisé partent vers `POST /api/v2/highlights/` de l'
+  [API classique](https://readwise.io/api_deets) (même jeton), après la file des
+  sessions et même si elle est bloquée. Readwise déduplique par
+  titre/auteur/texte/`source_url` : tout renvoyer à chaque synchronisation est
+  sans risque. Cette clé ignore la note : comme pour le journal Hardcover, la CLI
+  liste ensuite les surlignages du livre Readwise (`GET ?book_id=`, 20/min),
+  les associe par texte et seconde de création, puis corrige les notes par
+  `PATCH`. L'ID du livre vient de la réponse du `POST`, sinon de la table
+  `highlight_books` de `readwise.sqlite`. Les suppressions sur la Kobo ne sont
+  pas répercutées, et rien ne garantit que ces surlignages apparaissent dans
+  Readwise Books. Ce réglage est distinct de `sync_annotations` (Hardcover).
 - Le firmware Kobo 5.x n'est pas pris en charge. Les captures de `screenshots/`
   viennent d'une vraie Kobo en mode `dual` (build `33f2e66`) ; les refaire si
   l'interface change.
@@ -35,12 +47,13 @@ sur l'installation et l'utilisation, avec les avertissements essentiels visibles
 | `hook/src/cli.cc`, `cli/src/messages.rs` | Communication entre le plugin Qt et la CLI Rust |
 | `cli/qt_codegen/` | Génération de `hook/src/messages.h` à partir des messages Rust |
 | `cli/src/main.rs`, `cli/src/commands/` | Commandes et sélection du fournisseur |
-| `cli/src/readwise.rs`, `cli/src/readwise/tests.rs` | Client Books, cache, livraison des sessions et tests HTTP locaux |
+| `cli/src/readwise.rs`, `cli/src/readwise/tests.rs` | Client Books, cache, livraison des sessions, envoi des surlignages (API v2) et tests HTTP locaux |
 | `cli/src/hardcover.rs`, `cli/src/graphql/` | Intégration Hardcover conservée |
 | `cli/src/epub.rs`, `cli/src/isbn.rs`, `cli/src/database.rs` | Métadonnées, identifiants et données Kobo |
 | `hook/tests/readwisesessions.cc` | Tests natifs Qt de capture des sessions |
 | `hook/tests/dualsync.cc`, `scripts/check-dual-sync` | Tests d'orchestration double avec vues Nickel et résultats CLI simulés |
 | `mise.toml`, `Dockerfile`, `hook/Makefile` | Compilation ARM, génération et empaquetage |
+| `scripts/nickel-emu/` | Nickel réel émulé dans un orb : installation, pilotage tactile, captures et journaux |
 
 Utiliser les sous-modules épinglés `hook/NickelHook` et `hook/qrcodegen` ; ne pas
 les mettre à jour implicitement. Modifier les messages dans `cli/src/messages.rs`,
@@ -68,7 +81,11 @@ contrôles natifs Linux, **pas la toolchain de compilation pour Kobo**.
 4. Compile et exécute les tests Qt de capture des sessions.
 5. Exécute `scripts/check-dual-sync` : contrôleur, files, réglages et capture réels,
    avec chemins de stockage temporaires, vues Nickel et résultats CLI simulés.
-6. Vérifie la syntaxe de toutes les sources C++ avec les bibliothèques Qt natives.
+6. Exécute `hook/tests/check-cli` : le vrai `hook/src/cli.cc` lance par `QProcess`
+   une CLI factice (absente, non exécutable, plantée, ou émettant des erreurs JSON)
+   et vérifie les dialogues, le mode silencieux et l'état des files.
+7. Compile et exécute les tests de sécurité des couvertures (`hook/tests/cover.cc`).
+8. Vérifie la syntaxe de toutes les sources C++ avec les bibliothèques Qt natives.
 
 Le script ajoute `$HOME/.cargo/bin` au `PATH` et définit `VERSION=readwise-dev`
 si cette variable est absente. Il utilise le toolchain Cargo actif ; si nécessaire,
@@ -89,8 +106,8 @@ Clippy du binaire : il ne couvre pas `--all-targets`.
 
 Les tests HTTP utilisent un serveur local simulant le contrat Readwise, **pas le
 service réel**. Les contrôles natifs ne valident ni l'ABI Kobo ni le rendu. Les
-écrans et hooks nécessitent `libnickel` et une liseuse compatible ; un navigateur
-ne peut pas les reproduire.
+écrans et hooks nécessitent `libnickel` : une liseuse compatible ou le
+[Nickel émulé](#nickel-emule) ; un navigateur ne peut pas les reproduire.
 
 ## Compilation pour Kobo
 
@@ -191,6 +208,42 @@ redémarrage est une **limite héritée**, que l'essai hors ligne sans redémarr
 ne couvre pas. Ne pas présenter la persistance Readwise comme valable pour les
 deux services.
 
+Sur [Nickel émulé](#nickel-emule), l'archive de `5f4527e` en mode `dual` avec les
+comptes de test a validé (novembre 2026,
+[fil de revue](https://ampcode.com/threads/T-01a1d220-0a7a-768d-b795-2f82e193e992)) :
+
+- **Sync now**, la fermeture du livre et la veille atteignent les deux services ;
+- une fermeture hors ligne conserve la session Readwise en `.json`, sans
+  dialogue, et un **Sync now** ultérieur l'envoie une seule fois ;
+- Settings, **Update book status** et la recherche de **Manually link book**.
+
+Ces essais ne retirent rien de la liste « non validé sur appareil ». Non couverts
+sous émulation : critique et journal (HTTP 403, voir les limites de l'émulation),
+`retry_on_network`, annotations, `sync_on_schedule`.
+
+Les corrections de `ab0d832` (CLI) et `4405488` (plugin) ont ensuite été rejouées
+sur Nickel émulé avec les comptes de test (14 novembre 2026, même fil de revue) :
+
+- Hardcover seul injoignable en mode `dual` : un dialogue unique, Readwise reçoit
+  sa session, la progression Hardcover attend puis part au **Sync now** suivant,
+  sans doublon ;
+- livre supprimé dans Readwise : `GET /books?ids=…` renvoie bien
+  `status: "deleted"` ; `.json` puis `.sent` conservés avec un `GET` seul, reprise
+  après restauration, une seule session créée ;
+- fin de session environ 99 s en avance : Readwise répond HTTP 200 avec le rejet
+  `invalid_value`, message « Invalid value for body: Value error, times must not
+  be in the future » ; la session reste `.json` et part une fois l'heure passée ;
+- JSON tronqué et session sans progression : renommés `.failed` à l'identique,
+  session suivante intacte, Hardcover non bloqué.
+
+Limites de ces essais : l'état `.sent` a été reconstruit à la main, un seul écart
+d'horloge a été essayé (avec un décalage ajouté à `emushim.c` dans un autre orb,
+non versionné), et les messages ont été reformulés après ces essais ; seuls les
+refus locaux et celui du livre supprimé ont été recapturés avec leur nouveau
+texte. **Une auto-sync bloquée par la file Readwise n'affiche rien** : le blocage
+n'apparaît qu'au **Sync now** suivant. Ce défaut d'information est connu et non
+corrigé.
+
 L'archive du fil de double synchronisation a été compilée avec `strayrose/nickeltc:latest` (alors Cargo 1.97,
 Qt 5.2.1, sans mise), et non par exécution de toute la recette Dockerfile ci-dessus.
 Dans cet environnement, la compilation a utilisé depuis `cli/` :
@@ -211,7 +264,112 @@ ouverture/fermeture, veille/réveil, changement de livre, reconnexion Wi-Fi,
 progression réelle, session manuelle, reprise hors ligne et absence de doublons
 côté Readwise. En mode double, vérifier aussi chaque service seul, les échecs dans
 les deux sens, les associations distinctes et la conservation des fonctions
-Hardcover. Ne pas attribuer aux tests natifs cette validation matérielle.
+Hardcover. Ne pas attribuer aux tests natifs ni au Nickel émulé cette validation
+matérielle.
+
+<a id="nickel-emule"></a>
+
+## Tester sur Nickel émulé depuis un orb
+
+`scripts/nickel-emu/` exécute le vrai Nickel **4.46.23852** (Kobo Libra Colour,
+`monza`, `mt8113t-ntx`) dans l'orb et y charge l'archive ARM non modifiée : QEMU
+en mode utilisateur, chroot du rootfs du firmware, et `emushim.c` (`LD_PRELOAD`)
+qui simule l'écran, le tactile et le contrôleur de la carte. Seul l'espace
+utilisateur est émulé.
+
+```sh
+scripts/nickel-emu/setup.sh                     # une fois par orb
+sudo docker build -t bookwise-nickeltc .        # une fois par orb
+TC_IMAGE=bookwise-nickeltc scripts/nickel-emu/tc.sh 'mise run build::package'
+scripts/nickel-emu/install.sh                   # KoboRoot.tgz -> émulation
+scripts/nickel-emu/mkconfig.sh dual             # ou hardcover, readwise
+scripts/nickel-emu/run.sh                       # stop.sh pour arrêter
+```
+
+- `setup.sh` est idempotent et fait ce que `.agents/setup` ne fait pas : paquets
+  `qemu-user-static`, `binutils-arm-linux-gnueabihf` et `unzip`, enregistrement
+  binfmt de qemu-arm, téléchargement du firmware Kobo (162 Mo, SHA-256 vérifié)
+  et construction de l'émulation dans `$EMU` (défaut `~/emu`). Il démarre aussi
+  Docker s'il est arrêté. `$EMU` est hors du dépôt : un nouvel orb repart de
+  `setup.sh`.
+- `mkconfig.sh` écrit `$EMU/onboard/.adds/NickelHardcover/config.ini` depuis les
+  secrets du projet `Readwise_test_account` et `Hardcover_test_account`, avec
+  `debug = true`, l'auto-sync et les annotations désactivées, `sync_on_close = 1`
+  et `readwise_publish_to_feed = false`. N'utiliser que ces comptes de test ; ne
+  pas copier ce fichier ni un jeton dans le dépôt, `.amp/in/` ou une sortie de
+  commande.
+- Après chaque compilation, relancer `install.sh` puis `run.sh` : le plugin est
+  chargé au démarrage de Nickel. `install.sh` copie aussi `cli` sous le nom
+  `CLI`, que lance le hook : le stockage FAT de la Kobo ignore la casse, pas l'orb.
+- `run.sh` démarre le service d'orb `nickel` ; l'accueil s'affiche après 25 à
+  45 s. Journal de Nickel : `$EMU/logs/nickel.log` (octets NUL : `grep -a`).
+
+Importer un livre : Nickel ignore un `.epub` simple (pas d'Adobe RMSDK) et
+n'importe qu'après un cycle USB.
+
+```sh
+python3 scripts/nickel-emu/mkepub.py "$HOME/emu/onboard/Frankenstein.kepub.epub" \
+  Frankenstein "Mary Shelley"
+scripts/nickel-emu/hw.sh usb plug add           # dialogue « Computer detected »
+scripts/nickel-emu/touch.py tap 572 1168        # Connect
+scripts/nickel-emu/hw.sh usb plug remove        # import : environ 20 s
+```
+
+Ce livre existe déjà dans les deux comptes de test (Readwise `8260170`,
+Hardcover `28722`) : le réutiliser évite d'y créer d'autres livres. Il se rouvre
+au début du chapitre, donc une session peut repartir d'un pourcentage plus bas :
+artefact du fichier de test, pas du plugin.
+
+Piloter et observer :
+
+- `touch.py tap X Y`, `touch.py swipe X1 Y1 X2 Y2`, `touch.py key 116` (bouton
+  d'alimentation : veille, puis réveil au second appui) ; `seq.sh "X Y attente_s" …`
+  enchaîne des taps. Les coordonnées sont celles de la capture 1264×1680.
+- `shot.sh <fichier.png>` capture l'écran ; `plog.sh [n]` affiche les dernières
+  lignes syslog du plugin ; `in.sh <commande>` s'exécute dans l'émulation en cours.
+- Confirmer chaque étape par une capture ou `plog.sh` avant le tap suivant :
+  ouvrir un livre prend environ 25 s et le premier menu de lecture plus de 4 s ;
+  un tap envoyé trop tôt est perdu.
+- Bibliothèque : couverture du premier livre (208,550). Lecture : centre
+  (632,840) pour afficher ou masquer le menu, page suivante (1150,840), icône du
+  plugin (1104,128), « Back to My Books » (245,130).
+- Menu du plugin en mode `dual`, x = 900 : Sync now 243, auto-sync Hardcover 334,
+  auto-sync Readwise 425, Manually link 516, Update status 607, journal 698,
+  critique 789, annotations 880, Settings 971. Sous-menu des statuts, x = 1000 :
+  Want to Read 334, Currently Reading 425, Read 516, Paused 607, Did Not Finish 698.
+- Dialogues : fermer (1183,80), page suivante (1155,1585), OK d'une erreur
+  (352,1110). Recapturer ces coordonnées si l'interface ou le mode change.
+
+Réseau et résultats :
+
+- Nickel n'a pas de Wi-Fi et se croit hors ligne. Tant que
+  `$EMU/rootfs/emu/online` existe (créé par `setup.sh`), le shim répond « en
+  ligne » au plugin seulement. Supprimer ce fichier simule le hors-ligne ; le
+  recréer avec `touch` rétablit la connexion.
+- Le signal `networkConnected` de Nickel n'est jamais émis : `retry_on_network`
+  n'est pas testable. Déclencher la reprise par **Sync now**.
+- Simuler une panne de Hardcover seul : écrire `hosts: files dns` dans
+  `$EMU/rootfs/etc/nsswitch.conf` et `127.0.0.1 api.hardcover.app` dans
+  `$EMU/rootfs/etc/hosts`. La CLI échoue alors en `Network` sans toucher
+  Readwise. Supprimer les deux fichiers pour rétablir. Ce procédé n'a pas été
+  essayé sur `readwise.io`.
+- Vérifier côté services sans afficher de jeton :
+  `scripts/nickel-emu/rw.py GET '/books/api/v1/sessions?limit=100'` et
+  `scripts/nickel-emu/hc.py '<requête GraphQL>'`. La file et les journaux de la
+  CLI sont dans `$EMU/onboard/.adds/NickelHardcover/` ; la base Kobo est
+  `$EMU/onboard/.kobo/KoboReader.sqlite` (module `sqlite3` de Python, l'orb n'a
+  pas la commande `sqlite3`).
+- Ces essais écrivent sur les comptes de test réels : la
+  [récupération des sessions](#recuperation-des-sessions-readwise) s'applique,
+  ne jamais renvoyer une session au résultat incertain.
+
+Limites de l'émulation :
+
+- Le jeton Hardcover de test n'a pas les droits `write:reviews` et
+  `read:journal` : critique et journal échouent en HTTP 403, sans défaut du plugin.
+- Non émulés : rendu et rafraîchissement e-ink, veille matérielle, horloge RTC,
+  Wi-Fi, autres modèles et firmwares. L'émulation complète de la carte (noyau,
+  pilotes) n'est pas possible dans un orb.
 
 ## Configuration et invariants de double synchronisation
 
@@ -248,6 +406,17 @@ Hardcover. Ne pas attribuer aux tests natifs cette validation matérielle.
   `--linked-id` appartient alors à Hardcover ; Readwise utilise les associations
   de ses sessions et de son cache. Avec `--service`, cet identifiant appartient au
   service explicitement ciblé. Ne jamais persister ce choix ponctuel dans `config.ini`.
+- Le `error_code` d'une erreur CLI décide de l'action du hook (`hook/src/cli.cc`) ;
+  les variantes sont dans `ExpectedError` (`cli/src/utils.rs`). `Unauthorized`
+  ouvre le dialogue de connexion, `BookNotFound` propose de lier ou délier le
+  livre du fournisseur principal (Hardcover en mode `dual`) et `InvalidConfig`
+  propose une réinitialisation : la commande `update` de Readwise n'émet pas ces
+  codes mais `ReadwiseAuth`, `ReadwiseBookNotFound` et `ReadwiseSync`, affichés
+  sans action. `Network` (pannes de transport, délai de 30 s par requête, HTTP
+  408/500/502/503/504 côté Hardcover) est le seul code qui conserve la
+  progression en attente pour `retry_on_network` ; tout autre échec la retire de
+  la file en mémoire du hook. Une synchronisation silencieuse n'ouvre aucun
+  dialogue, quel que soit le code.
 - Une reprise de la file Readwise ne doit ni rejouer une session acceptée ni
   acquitter la progression d'un intervalle encore actif. Les résultats incertains
   bloquent Readwise seulement, pas Hardcover.
@@ -316,16 +485,34 @@ La file persistante est `.adds/NickelHardcover/readwise-sessions/` :
 
 | Extension | Signification | Action |
 | --- | --- | --- |
-| `.json` | Non envoyée ou refusée avec reprise possible (401/403/429) | Corriger le jeton/l'accès, respecter `Retry-After`, puis synchroniser |
+| `.json` | Non envoyée ou refusée avec reprise possible (401/403/429, fin de session dans le futur) | Corriger le jeton/l'accès ou l'horloge, respecter `Retry-After`, puis synchroniser |
 | `.sending` | Envoi commencé, résultat incertain ou interruption | Vérifier dans Readwise ; aucune relance automatique |
 | `.sent` | Session acceptée, statut du livre restant à mettre à jour | Synchroniser ; seul le `PATCH` du livre est rejoué |
-| `.failed` | Rejet explicite, même si HTTP 200 | Lire le motif (requête, code, champ) dans le message d'erreur ou `nickelhardcover_*.log`, corriger, puis remettre le fichier en `.json` |
+| `.failed` | Rejet explicite, même si HTTP 200, ou fichier `.json` illisible ou invalide | Lire le motif (requête, code, champ, ou nom du fichier) dans le message d'erreur ou `nickelhardcover_*.log`, corriger, puis remettre le fichier en `.json` |
 
 Un `.sending` ou `.failed` bloque la file Readwise, **pas Hardcover**, pour éviter
 de réappliquer une ancienne progression après une plus récente. Le verrou `readwise-sync.lock` empêche des
-vidages concurrents ; `readwise-retry-at` conserve le délai de reprise réseau.
+vidages concurrents. Les délais de reprise après un 429 sont séparés :
+`readwise-books-retry-at` pour l'API Books et `readwise-highlights-retry-at` pour
+les surlignages (API v2). Un ancien `readwise-retry-at` reste respecté par les
+deux jusqu'à son expiration.
 Préserver l'ordre chronologique et la persistance de l'accusé de réception avant
 la mise à jour du statut du livre.
+
+Trois cas ne sont pas des rejets définitifs et ne doivent pas le devenir :
+
+- **Horloge en avance.** Une session dont la fin est dans le futur n'est pas
+  envoyée. Si Readwise la rejette avec `invalid_value` et le message « times must
+  not be in the future », elle reste `.json` avec ses dates d'origine. Tout autre
+  libellé reste `.failed` : ne pas élargir cette reconnaissance sans rejet observé.
+- **Livre supprimé dans Readwise.** Pour une association déjà connue, la CLI lit
+  le statut avant d'envoyer une session ou de rejouer le `PATCH` d'un `.sent` et
+  refuse de restaurer un livre `deleted`. Les sessions sont conservées et
+  bloquent la file jusqu'à une restauration explicite par l'utilisateur. Une
+  suppression entre ce `GET` et le `PATCH` n'est pas couverte, ni la première
+  résolution d'un livre sans cache.
+- **Fichier illisible ou invalide.** Il est renommé `.failed` sans modification
+  de ses octets. Le remettre en `.json` sans le corriger le renomme à nouveau.
 
 Avant toute intervention, désactiver les synchronisations automatiques, attendre
 la fin d'un éventuel envoi, connecter la Kobo en USB et sauvegarder les fichiers.

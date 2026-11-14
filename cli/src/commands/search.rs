@@ -54,6 +54,10 @@ pub fn run(context: &mut AppContext, args: Search) -> Result<()> {
   .results
   .context("Failed to find field <i>results</i> in Hardcover.app results")?;
 
+  send_msg!(&Messages::SearchPages(parse_search_pages(&res, args.limit)?))
+}
+
+fn parse_search_pages(res: &Value, limit: u64) -> Result<SearchPages> {
   let results = res
     .get("hits")
     .and_then(Value::as_array)
@@ -66,14 +70,16 @@ pub fn run(context: &mut AppContext, args: Search) -> Result<()> {
         .and_then(Value::as_array)
         .iter()
         .flat_map(|contributions| {
-          contributions.iter().filter_map(|item| match item.get("contribution") {
-            Some(Value::Null) | None => item
-              .get("author")
-              .and_then(|author| author.get("name"))
-              .and_then(Value::as_str)
-              .map(str::to_string),
-            _ => None,
-          })
+          contributions
+            .iter()
+            .filter_map(|item| match item.get("contribution").and_then(Value::as_str) {
+              Some("Author") | None => item
+                .get("author")
+                .and_then(|author| author.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+              _ => None,
+            })
         })
         .collect::<Vec<_>>(),
       id: doc.get("id").and_then(Value::as_str).map(str::to_string),
@@ -82,7 +88,7 @@ pub fn run(context: &mut AppContext, args: Search) -> Result<()> {
         .and_then(|image| image.get("url"))
         .and_then(Value::as_str)
         .map(str::to_string),
-      rating: doc.get("rating").and_then(Value::as_u64),
+      rating: doc.get("rating").and_then(Value::as_f64),
       release_year: doc.get("release_year").and_then(Value::as_i64),
       series: doc.get("featured_series").map(|featured_series| Series {
         name: featured_series
@@ -90,7 +96,7 @@ pub fn run(context: &mut AppContext, args: Search) -> Result<()> {
           .and_then(|s| s.get("name"))
           .and_then(Value::as_str)
           .map(str::to_string),
-        position: featured_series.get("position").and_then(Value::as_u64),
+        position: featured_series.get("position").and_then(Value::as_f64),
         primary_books_count: featured_series
           .get("series")
           .and_then(|series| series.get("primary_books_count"))
@@ -101,13 +107,54 @@ pub fn run(context: &mut AppContext, args: Search) -> Result<()> {
     })
     .collect::<Vec<_>>();
 
-  send_msg!(&Messages::SearchPages(SearchPages {
+  Ok(SearchPages {
     results,
     page: res.get("page").and_then(Value::as_u64).unwrap_or(0),
     total: match res.get("found").and_then(Value::as_u64) {
       Some(0) => 0,
-      Some(n) => n.div_ceil(args.limit).max(1),
+      Some(n) => n.div_ceil(limit).max(1),
       None => 1,
     },
-  }))
+  })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use serde_json::json;
+
+  #[test]
+  fn search_preserves_authors_and_fractional_metadata() {
+    let result = parse_search_pages(
+      &json!({
+        "hits": [{"document": {
+          "id": "123", "title": "A book", "rating": 4.31,
+          "contributions": [
+            {"contribution": "Author", "author": {"name": "Named author"}},
+            {"contribution": null, "author": {"name": "Legacy author"}},
+            {"author": {"name": "Unspecified author"}},
+            {"contribution": "Illustrator", "author": {"name": "Illustrator"}}
+          ],
+          "featured_series": {"position": 1.5, "series": {"name": "Series", "primary_books_count": 4}}
+        }}, {"document": {"title": "No metadata"}}, {"document": {
+          "rating": 4, "featured_series": {"position": 1.0}
+        }}],
+        "page": 2, "found": 7
+      }),
+      3,
+    )
+    .unwrap();
+    let output = serde_json::to_value(result).unwrap();
+    assert_eq!(
+      output["results"][0]["authors"],
+      json!(["Named author", "Legacy author", "Unspecified author"])
+    );
+    assert_eq!(output["results"][0]["rating"], json!(4.31));
+    assert_eq!(output["results"][0]["series"]["position"], json!(1.5));
+    assert_eq!(output["results"][1]["rating"], Value::Null);
+    assert_eq!(output["results"][1]["authors"], json!([]));
+    assert_eq!(output["results"][2]["rating"].as_f64(), Some(4.0));
+    assert_eq!(output["results"][2]["series"]["position"].as_f64(), Some(1.0));
+    assert_eq!((output["page"].as_u64(), output["total"].as_u64()), (Some(2), Some(3)));
+  }
 }

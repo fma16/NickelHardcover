@@ -32,8 +32,8 @@ public:
     setValue(contentId, "progress", value, readwise);
   }
   int getLastProgress(const QString &contentId) const { return getLastProgress(contentId, isReadwise()); }
-  int getLastProgress(const QString &contentId, bool readwise) const {
-    return getValue(contentId, "progress", readwise).toInt();
+  int getLastProgress(const QString &contentId, bool readwise, int defaultValue = 0) const {
+    return getValue(contentId, "progress", readwise, defaultValue).toInt();
   }
 
   // In dual mode the book-management UI retains the complete Hardcover feature set.
@@ -63,6 +63,8 @@ public:
 
   void setSyncAnnotations(bool value) { config->setValue("sync_annotations", value); }
   bool getSyncAnnotations() const { return config->value("sync_annotations", false).toBool(); }
+  void setReadwiseSyncAnnotations(bool value) { config->setValue("readwise_sync_annotations", value); }
+  bool getReadwiseSyncAnnotations() const { return config->value("readwise_sync_annotations", false).toBool(); }
 
   void setSyncOnClose(const QVariant &value) { config->setValue("sync_on_close", value); }
   int getSyncOnClose() const;

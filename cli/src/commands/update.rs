@@ -54,7 +54,7 @@ pub struct Update {
 pub fn run(context: &mut AppContext, args: &Update) -> Result<()> {
   match args.service.as_deref().unwrap_or(&context.config.provider) {
     "readwise" => crate::readwise::sync(context, &args.content_id, args.linked_id)
-      .map_err(|error| ExpectedError::BookInfo(format!("Readwise Books: {error}")).into()),
+      .map_err(|error| crate::readwise::sync_error(&error, None)),
     "hardcover" => sync_hardcover(context, args),
     "dual" if args.service.is_none() => {
       // --linked-id belongs to Hardcover in dual mode. Readwise resolves its own
@@ -63,6 +63,16 @@ pub fn run(context: &mut AppContext, args: &Update) -> Result<()> {
       let readwise = crate::readwise::sync(context, "", None);
       match (hardcover, readwise) {
         (Ok(()), Ok(())) => Ok(()),
+        (hardcover, Err(readwise)) => {
+          let hardcover = match hardcover {
+            Ok(()) => "OK".to_owned(),
+            Err(error) => format!("{error:#}"),
+          };
+          Err(crate::readwise::sync_error(
+            &readwise,
+            Some(&format!("Hardcover: {hardcover}; Readwise Books")),
+          ))
+        }
         (hardcover, readwise) => {
           let describe = |result: Result<()>| match result {
             Ok(()) => "OK".to_owned(),

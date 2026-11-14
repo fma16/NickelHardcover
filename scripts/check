@@ -15,6 +15,7 @@ g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
 "$test_binary"
 
 bash scripts/check-dual-sync
+bash hook/tests/check-cli
 
 g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
   $(pkg-config --cflags Qt5Widgets Qt5Network) hook/src/cover.cc hook/tests/cover.cc \

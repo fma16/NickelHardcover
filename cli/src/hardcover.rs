@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use itertools::Itertools;
 use jiff::Timestamp;
 use retry::{
+  OperationResult,
   delay::{Exponential, jitter},
   retry,
 };
@@ -38,6 +39,27 @@ pub mod scalars {
 
 pub fn handle_response(context: &mut AppContext, res: Response<Body>) -> Result<Value> {
   let code = res.status();
+
+  // Proxies can return plain text (or sensitive/truncated bodies). Classify
+  // transient HTTP failures before parsing or logging their response bodies.
+  if matches!(code.as_u16(), 408 | 500 | 502 | 503 | 504) {
+    return Err(
+      ExpectedError::Network(format!(
+        "Hardcover is temporarily unavailable (HTTP {}). Please try syncing again later.",
+        code.as_u16()
+      ))
+      .into(),
+    );
+  }
+  if code == StatusCode::UNAUTHORIZED {
+    return Err(ExpectedError::Unauthorized.into());
+  }
+  if code == StatusCode::FORBIDDEN {
+    return Err(ExpectedError::BookInfo(
+      "Hardcover denied access (HTTP 403). Reconnect with a token that grants the required permissions. Journal access requires read:journal; reviews require write:reviews.".into(),
+    )
+    .into());
+  }
 
   if code == StatusCode::TOO_MANY_REQUESTS
     && let Some(retry_after) = res.headers().get("Retry-After")
@@ -74,7 +96,7 @@ pub fn handle_response(context: &mut AppContext, res: Response<Body>) -> Result<
     }
   }
 
-  let body = res.into_body().read_to_string()?;
+  let body = res.into_body().read_to_string().map_err(transport_error)?;
 
   // OAuth responses carry tokens and device codes, and every log level is
   // buffered and may be written to disk even with debug disabled. Only log
@@ -101,6 +123,30 @@ pub fn handle_response(context: &mut AppContext, res: Response<Body>) -> Result<
   }
 
   Ok(json)
+}
+
+pub fn transport_error(error: ureq::Error) -> anyhow::Error {
+  match error {
+    ureq::Error::Timeout(_) => {
+      ExpectedError::Network("Hardcover did not respond in time. Please try syncing again later.".into()).into()
+    }
+    ureq::Error::Io(_) | ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => ExpectedError::Network(
+      "Could not communicate with Hardcover. Please check your connection and try syncing again later.".into(),
+    )
+    .into(),
+    other => other.into(),
+  }
+}
+
+pub fn retry_request<T>(mut request: impl FnMut() -> Result<T>) -> Result<T> {
+  retry(Exponential::from_millis(10).map(jitter).take(3), || match request() {
+    Ok(value) => OperationResult::Ok(value),
+    // Do not multiply the timeout or immediately replay a write whose outcome
+    // is unknown. Expected errors go back to the caller (and the sync queue).
+    Err(error) if error.downcast_ref::<ExpectedError>().is_some() => OperationResult::Err(error),
+    Err(error) => OperationResult::Retry(error),
+  })
+  .map_err(|err| err.error)
 }
 
 fn redact(mut value: Value) -> Value {
@@ -166,21 +212,17 @@ pub fn send_request<T: Serialize, R: DeserializeOwned>(
     refresh_token(context)?;
   }
 
-  let json = retry(Exponential::from_millis(10).map(jitter).take(3), || {
+  let json = retry_request(|| {
     let res = context
       .agent
       .post(format!("{}{}", BASE_URL, "/v1/graphql"))
       .header("authorization", format!("Bearer {}", context.config.access_token))
       .send_json(&request_body)
+      .map_err(transport_error)
       .context("Failed to send request")?;
-
-    if res.status() == StatusCode::UNAUTHORIZED {
-      return Err(ExpectedError::Unauthorized.into());
-    }
 
     handle_response(context, res)
   })
-  .map_err(|err| err.error)
   .context(format!("<i>{operation_name}</i> request failed"))?;
 
   serde_json::from_value(json).context(format!("Failed to deserialize <i>{operation_name}</i> response"))
@@ -212,6 +254,213 @@ mod tests {
 
   use super::*;
   use crate::{commands::oauthset::OAuthSet, config::Config, utils::LOGGER};
+
+  #[test]
+  fn server_unavailability_is_a_network_error_without_reading_the_body() {
+    let mut context = AppContext {
+      agent: ureq::Agent::new_with_defaults(),
+      config: Config::default(),
+      rate_limit: 1,
+      user: None,
+    };
+    for status in [503, 408, 500, 502, 504] {
+      let response = Response::builder()
+        .status(status)
+        .body(Body::builder().data("no available server SECRET"))
+        .unwrap();
+      let error = handle_response(&mut context, response).unwrap_err();
+      assert_eq!(
+        error.downcast_ref::<ExpectedError>().map(AsRef::as_ref),
+        Some("Network"),
+        "{error:#}"
+      );
+      assert!(!format!("{error:#}").contains("SECRET"));
+    }
+    for (status, expected) in [
+      (200, None),
+      (401, Some("Unauthorized")),
+      (403, Some("BookInfo")),
+      (400, None),
+      (501, None),
+    ] {
+      let response = Response::builder()
+        .status(status)
+        .body(Body::builder().data("{}"))
+        .unwrap();
+      let result = handle_response(&mut context, response);
+      assert_eq!(result.is_ok(), status == 200);
+      assert_eq!(
+        result
+          .err()
+          .as_ref()
+          .and_then(|e| e.downcast_ref::<ExpectedError>())
+          .map(AsRef::as_ref),
+        expected
+      );
+    }
+  }
+
+  #[test]
+  fn request_timeouts_are_not_replayed_or_wrapped_as_oauth_errors() {
+    use crate::commands::{oauthrequest, oauthset};
+    use std::{
+      net::TcpListener,
+      sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+      },
+      thread,
+    };
+
+    // A real HTTP CONNECT proxy that accepts connections but never responds.
+    // The production GraphQL and OAuth paths must all return Network once.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = ureq::Proxy::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let shutdown = stop.clone();
+    let server = thread::spawn(move || {
+      let mut connections = Vec::new();
+      while !shutdown.load(Ordering::SeqCst) {
+        match listener.accept() {
+          Ok((stream, _)) => connections.push(stream),
+          Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => sleep(Duration::from_millis(1)),
+          Err(error) => panic!("{error}"),
+        }
+      }
+      connections.len()
+    });
+    let mut context = AppContext {
+      agent: ureq::Agent::config_builder()
+        .proxy(Some(proxy))
+        .timeout_global(Some(Duration::from_millis(100)))
+        .http_status_as_error(false)
+        .build()
+        .into(),
+      config: Config {
+        access_token: "test-token".into(),
+        refresh_token: "test-refresh".into(),
+        ..Config::default()
+      },
+      rate_limit: 1,
+      user: None,
+    };
+    let results = [
+      send_request::<_, Value>(&mut context, "TestWrite", serde_json::json!({"query": "mutation {}"})).map(|_| ()),
+      oauthset::refresh_token(&mut context),
+      oauthrequest::run(&mut context, &oauthrequest::OAuthRequest {}),
+      oauthset::run(
+        &mut context,
+        &OAuthSet::from_args(&["oauth-set"], &["--device-code", "test-device"]).unwrap(),
+      ),
+    ];
+    stop.store(true, Ordering::SeqCst);
+    let connections = server.join().unwrap();
+    for result in results {
+      let error = result.unwrap_err();
+      assert!(
+        matches!(error.root_cause().downcast_ref(), Some(ExpectedError::Network(_))),
+        "{error:#}"
+      );
+    }
+    assert_eq!(connections, 4, "A timed-out request must not be replayed");
+    assert_eq!(context.config.access_token, "test-token");
+    assert_eq!(context.config.refresh_token, "test-refresh");
+  }
+
+  #[test]
+  fn body_timeout_is_a_network_error_and_does_not_replay_the_request() {
+    use std::{
+      io::{BufRead, BufReader, Write},
+      net::TcpListener,
+      sync::mpsc,
+      thread,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (stop, shutdown) = mpsc::channel();
+    let server = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+      let mut reader = BufReader::new(stream.try_clone().unwrap());
+      loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+          break;
+        }
+      }
+      stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+        .unwrap();
+      let _ = shutdown.recv_timeout(Duration::from_secs(5));
+    });
+    let mut context = AppContext {
+      agent: ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(Duration::from_millis(100)))
+        .build()
+        .into(),
+      config: Config::default(),
+      rate_limit: 1,
+      user: None,
+    };
+    let mut attempts = 0;
+    let result = retry_request(|| {
+      attempts += 1;
+      let response = context.agent.get(&url).call().map_err(transport_error)?;
+      handle_response(&mut context, response)
+    });
+    stop.send(()).unwrap();
+    server.join().unwrap();
+    let error = result.unwrap_err();
+    assert!(
+      matches!(error.downcast_ref(), Some(ExpectedError::Network(_))),
+      "{error:#}"
+    );
+    assert_eq!(attempts, 1);
+    for error in [
+      ureq::Error::HostNotFound,
+      ureq::Error::ConnectionFailed,
+      ureq::Error::Io(std::io::Error::other("sensitive detail")),
+    ] {
+      let error = transport_error(error);
+      assert!(matches!(error.downcast_ref(), Some(ExpectedError::Network(_))));
+      assert!(!error.to_string().contains("sensitive detail"));
+    }
+    assert!(
+      transport_error(ureq::Error::BadUri("invalid".into()))
+        .downcast_ref::<ExpectedError>()
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn missing_permissions_are_actionable_and_redacted() {
+    let mut context = AppContext {
+      agent: ureq::Agent::new_with_defaults(),
+      config: Config::default(),
+      rate_limit: 1,
+      user: None,
+    };
+    for scope in ["read:journal", "write:reviews"] {
+      let response = Response::builder()
+        .status(403)
+        .body(Body::builder().data(format!(
+          r#"{{"error":"insufficient_scope","error_description":"Missing scopes: {scope}","access_token":"SECRET"}}"#
+        )))
+        .unwrap();
+      let error = handle_response(&mut context, response).unwrap_err();
+      let expected = error
+        .downcast_ref::<ExpectedError>()
+        .expect("Expected an actionable error");
+      assert_eq!(expected.as_ref(), "BookInfo");
+      assert!(expected.to_string().contains(scope), "{expected}");
+      assert!(expected.to_string().contains("Reconnect"), "{expected}");
+      assert!(!format!("{error:#}").contains("SECRET"));
+    }
+  }
 
   #[test]
   fn oauth_secrets_never_reach_errors_or_buffered_logs() {

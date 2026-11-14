@@ -100,7 +100,7 @@ pub struct JournalList {
 #[derive(Serialize)]
 pub struct Series {
   pub name: Option<String>,
-  pub position: Option<u64>,
+  pub position: Option<f64>,
   pub primary_books_count: Option<u64>,
 }
 
@@ -109,7 +109,7 @@ pub struct SearchResult {
   pub authors: Vec<String>,
   pub id: Option<String>,
   pub image: Option<String>,
-  pub rating: Option<u64>,
+  pub rating: Option<f64>,
   pub release_year: Option<i64>,
   pub series: Option<Series>,
   pub title: Option<String>,

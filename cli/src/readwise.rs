@@ -1,6 +1,11 @@
 //! Readwise Books v1. Session POSTs are deliberately never retried after an
 //! ambiguous response: the API has no idempotency key or duplicate detection.
-use std::{fs, path::PathBuf, time::Duration};
+//! Kobo highlights go to the classic Readwise API (v2), which deduplicates them.
+use std::{
+  fs,
+  path::{Path, PathBuf},
+  time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use jiff::Timestamp;
@@ -12,11 +17,15 @@ use ureq::Agent;
 use crate::{
   appcontext::AppContext,
   config::Config,
+  database::{get_bookmarks, get_title_author},
   messages::{Messages, SearchPages, SearchResult, User, UserBook},
   utils::{ExpectedError, normalize_identifiers, send_msg},
 };
 
 const BASE: &str = "https://readwise.io/books/api/v1";
+// Same host and token as Books: https://readwise.io/api_deets
+const HIGHLIGHTS: &str = "/api/v2/highlights/";
+const LINK_HELP: &str = "To change a Readwise link, use provider=readwise and Manually link book. In dual mode, switch temporarily, close and reopen the book, then return to dual and reopen it. Queued sessions keep their links; see README before changing them.";
 
 #[cfg(test)]
 mod tests;
@@ -34,6 +43,7 @@ struct ApiError {
   // Only an explicit rejection proves that a session was not created.
   rejected: bool,
   retryable: bool,
+  authentication: bool,
 }
 
 impl std::fmt::Display for ApiError {
@@ -42,6 +52,87 @@ impl std::fmt::Display for ApiError {
   }
 }
 impl std::error::Error for ApiError {}
+
+// The API has no separate error code for future timestamps. Recognize only
+// the explicit time rejection, never all invalid_value errors or a 5xx reply.
+fn clock_advice(method: &str, path: &str, error: &Value) -> &'static str {
+  let future = |value: &Value| {
+    value["message"]
+      .as_str()
+      .is_some_and(|s| s.to_ascii_lowercase().contains("times must not be in the future"))
+  };
+  if method == "POST"
+    && path == "/sessions"
+    && error["code"] == "invalid_value"
+    && (future(error)
+      || error["details"]
+        .as_array()
+        .is_some_and(|details| details.iter().any(future)))
+  {
+    "Readwise refused a session that ends in the future: the Kobo clock is ahead, or was while you read. Check the Kobo clock, then sync again in a few minutes. The session stays queued with its original times."
+  } else {
+    ""
+  }
+}
+
+// What to do comes first; the request diagnostic follows for bug reports.
+fn advised(advice: &str, diagnostic: String) -> String {
+  if advice.is_empty() {
+    diagnostic
+  } else {
+    format!("{advice} ({diagnostic})")
+  }
+}
+
+// Dialogs name a queued file by its path below the plugin folder, as seen over USB.
+fn queued(path: &Path) -> String {
+  format!(
+    "readwise-sessions/{}",
+    path.file_name().unwrap_or_default().to_string_lossy()
+  )
+}
+
+// A .sending or .failed file blocks the queue; say which case it is.
+fn paused(path: &Path) -> String {
+  let cause = if path.extension().is_some_and(|e| e == "sending") {
+    "it is not known whether Readwise received session"
+  } else {
+    "Readwise rejected, or the plugin could not read, session"
+  };
+  format!(
+    "Readwise uploads are paused: {cause} {}. Do not resend it; see Troubleshooting in the README.",
+    queued(path)
+  )
+}
+
+// Keep service-specific codes: the generic Unauthorized/BookNotFound codes
+// trigger Hardcover OAuth or link actions in Nickel, including in dual mode.
+// Nickel titles the dialog of a Readwise command "Readwise Books", so only a
+// message covering both services names them, through `services`.
+pub fn sync_error(error: &anyhow::Error, services: Option<&str>) -> anyhow::Error {
+  let message = match services {
+    Some(services) => format!("{services}: {error:#}"),
+    None => format!("{error:#}"),
+  };
+  match error.downcast_ref::<ExpectedError>() {
+    Some(ExpectedError::ReadwiseAuth(_)) => ExpectedError::ReadwiseAuth(message),
+    Some(ExpectedError::BookNotFound(_) | ExpectedError::ReadwiseBookNotFound(_)) => {
+      ExpectedError::ReadwiseBookNotFound(message)
+    }
+    _ if error
+      .downcast_ref::<ApiError>()
+      .is_some_and(|error| error.authentication) =>
+    {
+      ExpectedError::ReadwiseAuth(message)
+    }
+    _ => ExpectedError::ReadwiseSync(message),
+  }
+  .into()
+}
+
+fn escape(text: &str) -> String {
+  text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
 
 /// Summarizes a documented Readwise Error object: code, message and each
 /// rejected field. Readwise states that its messages never repeat submitted
@@ -59,18 +150,12 @@ fn describe(error: &Value) -> String {
     let field = format!("{} {}", text(&detail["location"]), text(&detail["field"]));
     let _ = write!(summary, " [{}: {}", field.trim(), text(&detail["code"]));
     let reason = text(&detail["message"]);
-    if !reason.is_empty() && reason != message {
+    if !reason.is_empty() && !message.contains(&reason) {
       let _ = write!(summary, " — {reason}");
     }
     summary.push(']');
   }
-  summary
-    .chars()
-    .take(400)
-    .collect::<String>()
-    .replace('&', "&amp;")
-    .replace('<', "&lt;")
-    .replace('>', "&gt;")
+  escape(&summary.chars().take(400).collect::<String>())
 }
 
 #[derive(Deserialize, Serialize)]
@@ -90,9 +175,54 @@ struct Session {
   publish_to_feed: bool,
 }
 
+impl Session {
+  fn read_pending(path: &Path) -> Result<Self> {
+    let bytes = fs::read(path).with_context(|| escape(&format!("Cannot read Readwise session {}", path.display())))?;
+    let parsed = serde_json::from_slice::<Self>(&bytes)
+      .map_err(|error| format!("the file is incomplete or damaged ({error})"))
+      .and_then(|session| {
+        let progress = 0.0..=1.0;
+        if session.ended_at <= session.started_at {
+          Err("it does not end after it starts".to_owned())
+        } else if !progress.contains(&session.percent_at_start) || !progress.contains(&session.percent_at_end) {
+          Err("its progress is outside 0 to 100%".to_owned())
+        } else if session.percent_at_end <= session.percent_at_start {
+          Err("it records no reading progress".to_owned())
+        } else {
+          Ok(session)
+        }
+      });
+    let session = match parsed {
+      Ok(session) => session,
+      Err(reason) => {
+        // Preserve original bytes and block newer progress. Only unsent .json
+        // files enter here, never an acknowledged .sent or uncertain .sending.
+        let failed = path.with_extension("failed");
+        fs::rename(path, &failed)?;
+        fs::File::open(path.parent().unwrap())?.sync_all()?;
+        bail!(
+          "{}",
+          escape(&format!(
+            "Queued Readwise session {} is invalid: {reason}. It was kept unchanged and Readwise uploads are paused. See Troubleshooting in the README.",
+            queued(&failed)
+          ))
+        );
+      }
+    };
+    // A clock correction may leave valid recorded times ahead of local now.
+    // This is temporary, not corruption; keep the original .json unchanged.
+    ensure!(
+      session.ended_at <= Timestamp::now(),
+      "A queued Readwise session ends in the future, at {}. Check the Kobo clock, then sync again after that time. The session stays queued.",
+      session.ended_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    );
+    Ok(session)
+  }
+}
+
 impl Client {
   fn new(context: &AppContext) -> Result<Self> {
-    ensure!(!context.config.readwise_token.trim().is_empty(), ExpectedError::BookInfo(
+    ensure!(!context.config.readwise_token.trim().is_empty(), ExpectedError::ReadwiseAuth(
       "Set readwise_token in .adds/NickelHardcover/config.ini using https://readwise.io/access_token, then reopen the book.".into()));
     Ok(Self {
       agent: Agent::config_builder()
@@ -109,18 +239,31 @@ impl Client {
   }
 
   fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, ApiError> {
-    let retry_path = self.directory.join("readwise-retry-at");
-    if let Ok(value) = fs::read_to_string(&retry_path)
-      && let Ok(until) = value.parse::<i64>()
-      && until > Timestamp::now().as_second()
-    {
-      return Err(ApiError {
-        message: "Readwise rate limit: wait before syncing again.".into(),
-        rejected: true,
-        retryable: true,
-      });
+    let retry_path = self.directory.join(if path.starts_with("/api/v2/") {
+      "readwise-highlights-retry-at"
+    } else {
+      "readwise-books-retry-at"
+    });
+    // An old shared deadline could belong to either API. Honor it until expiry
+    // after an upgrade, but only write the separate deadlines from now on.
+    for path in [self.directory.join("readwise-retry-at"), retry_path.clone()] {
+      if let Ok(value) = fs::read_to_string(path)
+        && let Ok(until) = value.parse::<i64>()
+        && until > Timestamp::now().as_second()
+      {
+        return Err(ApiError {
+          message: "Readwise rate limit: wait before syncing again.".into(),
+          rejected: true,
+          retryable: true,
+          authentication: false,
+        });
+      }
     }
-    let url = format!("{}{path}", self.base);
+    let url = if path.starts_with("/api/v2/") {
+      format!("{}{path}", self.base.trim_end_matches("/books/api/v1"))
+    } else {
+      format!("{}{path}", self.base)
+    };
     let auth = format!("Token {}", self.token);
     let response = match method {
       "GET" => self.agent.get(&url).header("Authorization", &auth).call(),
@@ -142,6 +285,7 @@ impl Client {
         .into(),
       rejected: false,
       retryable: false,
+      authentication: false,
     })?;
     let status = response.status().as_u16();
     if status == 429 {
@@ -157,37 +301,44 @@ impl Client {
         message: "Cannot save Readwise rate-limit deadline.".into(),
         rejected: true,
         retryable: false,
+        authentication: false,
       })?;
     }
     if status != 200 {
       // Name the request and keep the documented error detail for diagnosis.
-      let detail = response
+      let error = response
         .body_mut()
         .read_json::<Value>()
-        .ok()
-        .filter(|body| body["error"].is_object())
-        .map(|body| format!(" Detail: {}", describe(&body["error"])))
-        .unwrap_or_default();
-      let message = format!(
-        "{} Request: {method} {}.{detail}",
-        match status {
-          401 => "Readwise token is invalid. Update readwise_token in config.ini.".into(),
-          403 => "Readwise access denied. Check that your account has Readwise Books.".into(),
-          429 => "Readwise rate limit reached. Retry after the server's waiting period.".into(),
-          _ => format!("Readwise returned HTTP {status}."),
-        },
-        path.split('?').next().unwrap_or(path)
-      );
+        .map_or(Value::Null, |body| body["error"].clone());
+      let detail = if error.is_object() {
+        format!(" Detail: {}", describe(&error))
+      } else {
+        String::new()
+      };
+      let advice = if status == 400 {
+        clock_advice(method, path, &error)
+      } else {
+        ""
+      };
+      let summary = match status {
+        401 => "Readwise token is invalid. Update readwise_token in config.ini.".into(),
+        403 => "Readwise access denied. Check that your account has Readwise Books.".into(),
+        429 => "Readwise rate limit reached. Retry after the server's waiting period.".into(),
+        _ => format!("Readwise returned HTTP {status}."),
+      };
+      let path = path.split('?').next().unwrap_or(path);
       return Err(ApiError {
-        message,
+        message: advised(advice, format!("{summary} Request: {method} {path}.{detail}")),
         rejected: (400..500).contains(&status),
-        retryable: matches!(status, 401 | 403 | 429),
+        retryable: matches!(status, 401 | 403 | 429) || !advice.is_empty(),
+        authentication: matches!(status, 401 | 403),
       });
     }
     response.body_mut().read_json().map_err(|_| ApiError {
       message: "Invalid Readwise response; session delivery may be uncertain.".into(),
       rejected: false,
       retryable: false,
+      authentication: false,
     })
   }
 
@@ -206,14 +357,23 @@ impl Client {
         message: "Invalid Readwise batch response; session delivery may be uncertain.".into(),
         rejected: false,
         retryable: false,
+        authentication: false,
       })?;
     let result = &results[0];
     if result["status"] == "error" {
       let code = result["error"]["code"].as_str().unwrap_or("unknown");
+      let advice = clock_advice(method, path, &result["error"]);
       return Err(ApiError {
-        message: format!("Readwise rejected {method} {path}: {}", describe(&result["error"])),
+        message: advised(
+          advice,
+          format!("Readwise rejected {method} {path}: {}", describe(&result["error"])),
+        ),
         rejected: true,
-        retryable: matches!(code, "rate_limited" | "unauthenticated" | "forbidden"),
+        retryable: matches!(
+          code,
+          "rate_limited" | "unauthenticated" | "forbidden" | "insufficient_scope"
+        ) || !advice.is_empty(),
+        authentication: matches!(code, "unauthenticated" | "forbidden" | "insufficient_scope"),
       });
     }
     let valid = if method == "PATCH" {
@@ -226,6 +386,7 @@ impl Client {
         message: "Unknown Readwise batch outcome.".into(),
         rejected: false,
         retryable: false,
+        authentication: false,
       });
     }
     Ok(result.clone())
@@ -234,13 +395,20 @@ impl Client {
   fn book(&self, id: i64) -> Result<Value> {
     ensure!(id > 0, "Invalid Readwise library book ID");
     let value = self.request("GET", &format!("/books?ids={id}"), None)?;
-    value["results"]
+    let book = value["results"]
       .as_array()
       .and_then(|books| books.iter().find(|b| b["id"] == id))
       .cloned()
       .ok_or_else(|| {
-        ExpectedError::BookNotFound("Readwise library book not found. Unlink it and select another book.".into()).into()
-      })
+        ExpectedError::ReadwiseBookNotFound(format!("Readwise library book {id} not found. {LINK_HELP}"))
+      })?;
+    ensure!(
+      book["status"] != "deleted",
+      ExpectedError::ReadwiseBookNotFound(format!(
+        "Readwise library book {id} is deleted in Readwise, and syncing will not restore it. Restore it in Readwise Books, then sync again; its sessions stay queued until then. See Troubleshooting in the README."
+      ))
+    );
+    Ok(book)
   }
 
   fn ensure_book(
@@ -336,22 +504,14 @@ impl Client {
       .collect::<std::io::Result<Vec<_>>>()?;
     paths.sort(); // UTC timestamp prefixes keep older progress before newer progress.
     // Stop rather than sending newer progress over an unresolved older session.
-    ensure!(
-      !paths
-        .iter()
-        .any(|p| matches!(p.extension().and_then(|s| s.to_str()), Some("sending" | "failed"))),
-      "A Readwise session needs attention in readwise-sessions (.sending or .failed). See README before retrying."
-    );
+    if let Some(path) = paths
+      .iter()
+      .find(|p| matches!(p.extension().and_then(|s| s.to_str()), Some("sending" | "failed")))
+    {
+      bail!("{}", escape(&paused(path)));
+    }
     for path in paths.iter().filter(|p| p.extension().is_some_and(|e| e == "json")) {
-      let mut session: Session = serde_json::from_slice(&fs::read(path)?)?;
-      ensure!(
-        session.ended_at > session.started_at
-          && session.ended_at <= Timestamp::now()
-          && (0.0..=1.0).contains(&session.percent_at_start)
-          && (0.0..=1.0).contains(&session.percent_at_end)
-          && session.percent_at_end > session.percent_at_start,
-        "Invalid queued Readwise session"
-      );
+      let mut session = Session::read_pending(path)?;
       let id = self.ensure_book(
         context,
         &session.content_id,
@@ -390,7 +550,7 @@ impl Client {
           fs::rename(&sending, path.with_extension("sent"))?;
           fs::File::open(&spool)?.sync_all()?;
         }
-        Ok(_) => bail!("Readwise returned no session_id. Delivery is uncertain; see README."),
+        Ok(_) => bail!("Readwise returned no session_id. Delivery is uncertain; see Troubleshooting in the README."),
         Err(error) => {
           if error.rejected {
             fs::rename(
@@ -416,6 +576,9 @@ impl Client {
       let id = session
         .book_id
         .context("Acknowledged session has no Readwise book ID")?;
+      // A book can be deleted after the session was accepted, including while
+      // the device is offline. Do not resurrect it during a shelf-update retry.
+      self.book(id)?;
       // 1.0 is the exact API boundary; rounding near-complete books up is wrong.
       #[allow(clippy::float_cmp)]
       let finished = session.percent_at_end == 1.0;
@@ -428,6 +591,127 @@ impl Client {
     }
     Ok(())
   }
+
+  /// Sends every visible Kobo highlight of the book on each sync. Readwise
+  /// deduplicates by title, author, text and source URL, so a resend or a retry
+  /// after an uncertain outcome creates nothing new.
+  fn send_highlights(&self, context: &mut AppContext, content_id: &str) -> Result<()> {
+    let mut bookmarks = get_bookmarks(context, content_id)?;
+    bookmarks.retain(|b| !b.text.trim().is_empty());
+    if bookmarks.is_empty() {
+      return Ok(());
+    }
+    bookmarks.sort_by_key(|b| b.date_created);
+    let (title, author) = get_title_author(context, content_id)?;
+    // Without a title Readwise files highlights under a generic "Quotes" book.
+    ensure!(
+      !title.trim().is_empty(),
+      "Kobo has no title for this book; its highlights were not sent."
+    );
+    // Documented maximum lengths; a longer field would reject the whole request.
+    let limit = |text: &str, max: usize| text.trim().chars().take(max).collect::<String>();
+    let highlights: Vec<Value> = bookmarks
+      .iter()
+      .map(|bookmark| {
+        let mut item = json!({
+          "text": limit(&bookmark.text, 8191), "title": limit(&title, 511), "author": limit(&author, 1024),
+          "category": "books", "source_type": "bookwise_nickel", "highlighted_at": bookmark.date_created,
+        });
+        if let Some(note) = bookmark.annotation.as_deref().map(|n| limit(n, 8191))
+          && !note.is_empty()
+        {
+          item["note"] = note.into();
+        }
+        // Position in millionths of the book orders highlights stably as new ones arrive.
+        if let Some(location) = bookmark.location {
+          item["location"] = json!((location * 1_000_000.0).round() as i64);
+          item["location_type"] = "order".into();
+        }
+        item
+      })
+      .collect();
+    log::info!("Send {} Kobo highlights to Readwise", highlights.len());
+    let mut book_id = None;
+    for chunk in highlights.chunks(100) {
+      let response = self
+        .request("POST", HIGHLIGHTS, Some(json!({ "highlights": chunk })))
+        .context("Kobo highlights: the next sync sends them again")?;
+      let books = response.as_array().context("Invalid Readwise highlights response")?;
+      book_id = book_id.or_else(|| books.iter().find_map(|b| b["id"].as_i64()).filter(|id| *id > 0));
+    }
+    self
+      .update_notes(content_id, book_id, &highlights)
+      .context("Kobo highlight notes: the next sync retries")
+  }
+
+  /// Deduplication ignores notes, so edited notes are patched like Hardcover's
+  /// journal: match by text and creation second. Readwise may omit the book from
+  /// the POST reply when nothing was created, hence the cached ID.
+  fn update_notes(&self, content_id: &str, book_id: Option<i64>, highlights: &[Value]) -> Result<()> {
+    let db = Connection::open(self.directory.join("readwise.sqlite"))?;
+    db.busy_timeout(Duration::from_secs(35))?;
+    db.execute_batch(
+      "CREATE TABLE IF NOT EXISTS highlight_books (content_id TEXT PRIMARY KEY, book_id INTEGER NOT NULL)",
+    )?;
+    let book_id = if let Some(id) = book_id {
+      db.execute(
+        "INSERT OR REPLACE INTO highlight_books VALUES (?1, ?2)",
+        rusqlite::params![content_id, id],
+      )?;
+      id
+    } else if let Some(id) = db
+      .query_row(
+        "SELECT book_id FROM highlight_books WHERE content_id=?1",
+        [content_id],
+        |r| r.get(0),
+      )
+      .optional()?
+    {
+      id
+    } else {
+      log::info!("Readwise returned no highlights book; notes are checked at a later sync");
+      return Ok(());
+    };
+    let mut existing = Vec::new();
+    for page in 1.. {
+      let value = self.request(
+        "GET",
+        &format!("{HIGHLIGHTS}?book_id={book_id}&page_size=1000&page={page}"),
+        None,
+      )?;
+      existing.extend(
+        value["results"]
+          .as_array()
+          .context("Invalid Readwise highlights list")?
+          .iter()
+          .cloned(),
+      );
+      if value["next"].is_null() {
+        break;
+      }
+    }
+    let second = |at: &Value| {
+      at.as_str()
+        .and_then(|s| s.parse::<Timestamp>().ok())
+        .map(Timestamp::as_second)
+    };
+    for item in highlights {
+      let note = item["note"].as_str().unwrap_or("");
+      let Some(id) = existing
+        .iter()
+        .find(|h| {
+          h["text"].as_str().map(str::trim) == item["text"].as_str()
+            && second(&h["highlighted_at"]).is_some_and(|at| Some(at) == second(&item["highlighted_at"]))
+        })
+        .filter(|h| h["note"].as_str().unwrap_or("").trim() != note)
+        .and_then(|h| h["id"].as_i64())
+      else {
+        continue;
+      };
+      self.request("PATCH", &format!("{HIGHLIGHTS}{id}/"), Some(json!({ "note": note })))?;
+    }
+    Ok(())
+  }
 }
 
 pub fn sync(context: &mut AppContext, content_id: &str, linked_id: Option<i64>) -> Result<()> {
@@ -435,7 +719,17 @@ pub fn sync(context: &mut AppContext, content_id: &str, linked_id: Option<i64>) 
   if linked_id.is_some() {
     client.ensure_book(context, content_id, linked_id, "", "")?;
   }
-  client.flush(context)
+  let sessions = client.flush(context);
+  // Highlights are idempotent, so a blocked session queue must not hold them back.
+  // Queue drains without a book (content_id "") only flush sessions.
+  if context.config.readwise_sync_annotations && !content_id.is_empty() {
+    let highlights = client.send_highlights(context, content_id);
+    return match (sessions, highlights) {
+      (Err(sessions), Err(highlights)) => Err(sessions.context(format!("Kobo highlights also failed: {highlights:#}"))),
+      (sessions, highlights) => sessions.and(highlights),
+    };
+  }
+  sessions
 }
 
 pub fn get_user(context: &AppContext) -> Result<()> {

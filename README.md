@@ -37,7 +37,8 @@ straight from the reading menu.
 | Reading session duration | — | ✅ |
 | Status, star rating, review | ✅ | ✅ in Readwise-only mode |
 | “Paused” status | ✅ | — |
-| Reading journal and annotations (highlights, notes) | ✅ | — |
+| Reading journal | ✅ | — |
+| Kobo highlights and notes | ✅ in the journal | ✅ in your Readwise highlights library (optional) |
 | Sign-in on the Kobo with a QR code | ✅ | — (token copied over USB) |
 | Offline sessions kept across restarts | — (kept in memory only) | ✅ |
 
@@ -47,9 +48,14 @@ upload queue, so a failure on one never undoes a successful sync on the other.
 You can sync **on demand**, **automatically while reading**, or **when you close a
 book** (putting the Kobo to sleep counts as closing).
 
-> The Readwise integration uses **Readwise Books**. It does not use Readwise
-> Reader or the Readwise highlights API, so your Kobo highlights are not sent to
-> Readwise.
+> The Readwise integration uses **Readwise Books** for progress and sessions.
+> The Books API cannot store highlights, so the optional highlight sync
+> (`readwise_sync_annotations`) uses the [classic Readwise API](https://readwise.io/api_deets)
+> with the same token. Highlights land in your Readwise highlights library
+> (Daily Review, exports), not necessarily on the book's page in Readwise Books.
+> Readwise skips highlights it already has, so each sync resends them safely. As
+> with Hardcover, a note added, edited or removed on the Kobo is updated in
+> Readwise at the next sync, but deleting a highlight on the Kobo does not delete it.
 
 ## Quick start
 
@@ -174,6 +180,9 @@ entry reminds you of these steps.)
 
    ; Sessions appear in your Readwise Books feed. Set to false to hide them.
    readwise_publish_to_feed = true
+
+   ; Also send your Kobo highlights and notes to Readwise. Off by default.
+   readwise_sync_annotations = false
 
    ; Recommended automatic sync settings (explained in "Settings reference").
    auto_sync_default = false
@@ -328,6 +337,7 @@ screen changes most of them for you.
 | `provider` | `hardcover` (default), `readwise`, `dual` | Services to sync |
 | `readwise_token` | your personal token | Readwise sign-in |
 | `readwise_publish_to_feed` | `true` (default), `false` | Show sessions in your Readwise Books feed |
+| `readwise_sync_annotations` | `true`, `false` (default) | Send the open book's Kobo highlights and notes to Readwise at each Readwise sync |
 | `auto_sync_default` | `true`, `false` | Turn auto-sync on automatically for new books |
 | `retry_on_network` | `true`, `false` | Retry failed uploads when Wi-Fi reconnects |
 | `sync_on_close` | `1`–`99`, `-1` = off | Sync on close/sleep after this many percentage points of progress |
@@ -365,15 +375,37 @@ screens. Leaving a book open without reading, or skipping pages, distorts it.
 Completed sessions are safe, but an abrupt shutdown can lose the session in
 progress.
 
-**A message asks me to check a pending Readwise session.**
-After a network interruption, the plugin may not know whether Readwise received a
-session. To avoid duplicates, it pauses **Readwise** uploads (Hardcover keeps
-working).
+**A message says Readwise uploads are paused.**
+The message names a file in `.adds/NickelHardcover/readwise-sessions/`. If it
+ends in `.sending`, the plugin does not know whether Readwise received that
+session, usually after a network interruption. If it ends in `.failed`, Readwise
+rejected the session or the plugin could not read it. To avoid duplicates and
+out-of-order progress, **Readwise** uploads stay paused until you resolve that
+file (Hardcover keeps working).
 
 1. **Do not delete the queue and do not force a resend.**
 2. Check in Readwise Books whether the session is there.
 3. Back up `.adds/NickelHardcover/`.
 4. Follow the [advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
+
+**A message asks me to check the Kobo clock.**
+The Kobo clock was ahead when the session was recorded, and Readwise refuses
+sessions that end in the future. The session stays queued with its original
+times and was not sent twice. Correct the Kobo's date and time, wait a few
+minutes (or until the UTC time shown in the message), then use **Sync now**.
+
+**A message says a Readwise library book is deleted.**
+The plugin never restores a book you deleted in Readwise. Its sessions stay on
+the Kobo and pause **Readwise** uploads (Hardcover keeps working). Either
+restore the book in Readwise Books and sync again, or back up
+`.adds/NickelHardcover/` and follow the
+[advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
+
+**A message says a queued Readwise session is invalid.**
+The session file on the Kobo is damaged, incomplete or records no progress; the
+message says which. The plugin keeps it unchanged under the `.failed` name shown
+in the message and pauses **Readwise** uploads. Do not rename it back: follow the
+[advanced recovery procedure](AGENTS.md#recuperation-des-sessions-readwise).
 
 **Can I switch to another Readwise account?**
 Not by just replacing the token: sessions from the old account could be sent to

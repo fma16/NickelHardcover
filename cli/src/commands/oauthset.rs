@@ -4,7 +4,10 @@ use itertools::Itertools;
 use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::{appcontext::AppContext, hardcover::handle_response};
+use crate::{
+  appcontext::AppContext,
+  hardcover::{handle_response, transport_error},
+};
 use crate::{
   config::{BASE_URL, CLIENT_ID, VERSION},
   utils::ExpectedError,
@@ -46,6 +49,9 @@ pub fn run(context: &mut AppContext, args: &OAuthSet) -> Result<()> {
       ("device_code", &args.device_code),
     ],
   ) {
+    if matches!(err.downcast_ref(), Some(ExpectedError::Network(_))) {
+      return Err(err);
+    }
     return Err(ExpectedError::OAuth(format!("{:#}", err.chain().join("<br>> "))).into());
   }
 
@@ -61,6 +67,9 @@ pub fn refresh_token(context: &mut AppContext) -> Result<()> {
       ("refresh_token", &context.config.refresh_token.clone()),
     ],
   ) {
+    if matches!(err.downcast_ref(), Some(ExpectedError::Network(_))) {
+      return Err(err);
+    }
     return Err(ExpectedError::OAuth(format!("{:#}", err.chain().join("<br>> "))).into());
   }
 
@@ -75,6 +84,7 @@ pub fn request_token<I: IntoIterator<Item = (K, V)>, K: AsRef<str>, V: AsRef<str
     .agent
     .post(format!("{}{}", BASE_URL, "/oauth2/token"))
     .send_form(body)
+    .map_err(transport_error)
     .context("Failed to send OAuth device request")?;
 
   let json = handle_response(context, res).context("OAuth token request failed");
@@ -88,6 +98,7 @@ pub fn request_token<I: IntoIterator<Item = (K, V)>, K: AsRef<str>, V: AsRef<str
       context.config.write()?;
       Ok(())
     }
+    Err(e) if matches!(e.downcast_ref(), Some(ExpectedError::Network(_))) => Err(e),
     Err(e) => {
       context.config.access_token = String::new();
       context.config.refresh_token = String::new();

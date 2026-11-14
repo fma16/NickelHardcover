@@ -33,7 +33,9 @@ public:
 
   int getCurrentProgress() const { return primaryQueue()->getProgress().value(contentId); }
 
-  const QHash<QString, int> &getProgress() const { return primaryQueue()->getProgress(); }
+  const QHash<QString, int> &getProgress(bool readwise) const {
+    return (readwise ? readwiseQueue : hardcoverQueue)->getProgress();
+  }
 
   void clearReadProgress(const QString &contentId) { primaryQueue()->clearReadProgress(contentId); }
   void clearReadwiseProgress(const QString &contentId) { readwiseQueue->clearReadProgress(contentId); }

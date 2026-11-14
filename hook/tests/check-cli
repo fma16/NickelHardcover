@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cp -R hook/src "$scratch/src"
+cp hook/tests/cliui.h "$scratch/src/cliui.h"
+cp hook/tests/cliprocess.cc "$scratch/cliprocess.cc"
+sed -i "s|/mnt/onboard|$scratch/onboard|g" "$scratch/src/files.h"
+sed -i -e 's|"search/searchdialog.h"|"cliui.h"|' \
+  -e 's|"signin/signindialog.h"|"cliui.h"|' "$scratch/src/cli.cc"
+for header in cli settings syncqueue synccontroller; do
+  moc "$scratch/src/$header.h" -o "$scratch/moc_$header.cc"
+done
+moc "$scratch/cliprocess.cc" -o "$scratch/cliprocess.moc"
+g++ -std=gnu++11 -fPIC -Wall -Wextra -Werror \
+  -Ihook/NickelHook $(pkg-config --cflags Qt5Widgets Qt5Network) \
+  "$scratch/cliprocess.cc" "$scratch"/moc_*.cc \
+  "$scratch/src/cli.cc" "$scratch/src/settings.cc" "$scratch/src/syncqueue.cc" \
+  "$scratch/src/synccontroller.cc" "$scratch/src/readwisesessions.cc" \
+  $(pkg-config --libs Qt5Widgets Qt5Network) -o "$scratch/test"
+export QT_QPA_PLATFORM=offscreen
+if (($#)); then
+  "$scratch/test" "$@"
+else
+  for scenario in missing not-executable network-retry; do
+    rm -f "$scratch/onboard/.adds/NickelHardcover/CLI"
+    "$scratch/test" "$scenario"
+  done
+  for error in ReadwiseSync ReadwiseAuth ReadwiseBookNotFound InvalidConfig BookNotFound Network crash unexpected-exit; do
+    "$scratch/test" silent "$error"
+    "$scratch/test" manual "$error"
+  done
+  "$scratch/test" silent Unauthorized
+fi

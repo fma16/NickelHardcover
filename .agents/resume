@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The Docker daemon does not survive a pause/resume or snapshot restore.
+sudo systemctl enable --now docker

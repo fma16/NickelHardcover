@@ -39,7 +39,7 @@ pub fn get_bookmarks(context: &mut AppContext, content_id: &str) -> Result<Vec<B
         Bookmark.DateCreated,
         ChapterProgress,
         chapter.WordCount,
-        SUM(before.WordCount)
+        IFNULL(SUM(before.WordCount), 0)
       FROM Bookmark
       LEFT JOIN content AS chapter
         ON chapter.ContentId = Bookmark.ContentId
@@ -79,6 +79,25 @@ pub fn get_bookmarks(context: &mut AppContext, content_id: &str) -> Result<Vec<B
     .context("Failed to run bookmark query")?
     .collect::<Result<Vec<_>, _>>()
     .context("Failed to map bookmark query result")
+}
+
+/// Title and author of a book as Kobo shows them.
+pub fn get_title_author(context: &AppContext, content_id: &str) -> Result<(String, String)> {
+  Connection::open_with_flags(&context.config.sqlite_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    .context(format!(
+      "Failed to connect to the database <i>{}</i>",
+      context.config.sqlite_path
+    ))?
+    .query_row(
+      "SELECT IFNULL(Title, ''), IFNULL(Attribution, '')
+      FROM content
+      WHERE BookTitle is null
+      AND ContentId is (?1)
+      LIMIT 1;",
+      [content_id],
+      |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .context("Failed to read the book title and author")
 }
 
 pub fn get_sqlite_isbn(context: &mut AppContext, content_id: &str) -> Result<Vec<String>> {
