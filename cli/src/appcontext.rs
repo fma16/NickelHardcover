@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use itertools::Itertools;
+use std::time::Duration;
 use ureq::Agent;
 
 use crate::{
@@ -45,6 +46,7 @@ impl AppContext {
       agent: Agent::config_builder()
         .user_agent(format!("{}/{}", env!("CARGO_PKG_NAME"), VERSION))
         .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .into(),
       config: Config {
@@ -58,5 +60,17 @@ impl AppContext {
       rate_limit: 1,
       user: None,
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::time::Duration;
+
+  #[test]
+  fn hardcover_requests_have_a_global_deadline() {
+    let context = AppContext::new().unwrap();
+    assert_eq!(context.agent.config().timeouts().global, Some(Duration::from_secs(30)));
   }
 }

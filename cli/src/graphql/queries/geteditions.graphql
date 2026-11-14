@@ -29,7 +29,7 @@ query GetEditions(
     order_by: { users_count: desc }
   ) {
     asin
-    contributions(where: { contribution: { _is_null: true } }) {
+    contributions(where: { _or: [{ contribution: { _is_null: true } }, { contribution: { _eq: "Author" } }] }) {
       author {
         name
       }

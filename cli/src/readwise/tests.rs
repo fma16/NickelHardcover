@@ -167,16 +167,299 @@ fn updated_book() -> (u16, String) {
   )
 }
 
+fn reading_book() -> (u16, String) {
+  (
+    200,
+    json!({"results": [{"id": 4790033, "status": "currently_reading"}]}).to_string(),
+  )
+}
+
+#[test]
+fn future_time_rejection_keeps_original_session_retryable() {
+  // The device believes the session just ended; the server is 90s behind it.
+  let device_now = Timestamp::now();
+  let server_now = device_now.as_second() - 90;
+  // Wording observed from the real service for an end time about 99s ahead.
+  let error = json!({"code": "invalid_value",
+    "message": "Invalid value for body: Value error, times must not be in the future",
+    "details": [{"location": "body", "field": "items.0.body", "code": "invalid_value",
+      "message": "Value error, times must not be in the future"}]});
+  for response in [
+    (400, json!({"error": error}).to_string()),
+    (
+      200,
+      json!({"results": [{"status": "error", "error": error}]}).to_string(),
+    ),
+  ] {
+    let server = Server::new(vec![
+      created_book(),
+      response,
+      reading_book(),
+      created_session(),
+      reading_book(),
+      updated_book(),
+    ]);
+    let mut fixture = Fixture::new(&server);
+    let path = fixture.queue("01", 0.447);
+    let mut session: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    session["started_at"] = json!(Timestamp::from_second(device_now.as_second() - 120).unwrap());
+    session["ended_at"] = json!(device_now);
+    fs::write(&path, session.to_string()).unwrap();
+    let message = fixture.sync().unwrap_err().to_string();
+    let posted = &server.requests()[1].1["items"][0];
+    assert!(
+      posted["ended_at"]
+        .as_str()
+        .unwrap()
+        .parse::<Timestamp>()
+        .unwrap()
+        .as_second()
+        > server_now
+    );
+    assert!(
+      path.exists(),
+      "explicit future rejection must remain retryable: {message}"
+    );
+    assert!(!path.with_extension("failed").exists());
+    let retained: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(retained["started_at"], session["started_at"]);
+    assert_eq!(retained["ended_at"], session["ended_at"]);
+    // The advice leads; the request diagnostic follows without repeating the reason.
+    assert!(
+      message.starts_with("Readwise refused a session that ends in the future"),
+      "{message}"
+    );
+    assert!(message.contains("Check the Kobo clock"), "{message}");
+    assert!(message.contains("POST /sessions"), "{message}");
+    assert_eq!(
+      message.matches("times must not be in the future").count(),
+      1,
+      "{message}"
+    );
+    // A later server response accepts the unchanged times. Only the explicit
+    // rejection is retried; an accepted session is never posted a third time.
+    fixture.sync().unwrap();
+    fixture.sync().unwrap();
+    let posts: Vec<_> = server
+      .requests()
+      .into_iter()
+      .filter(|r| r.0 == "POST /books/api/v1/sessions HTTP/1.1")
+      .collect();
+    assert_eq!(posts.len(), 2);
+    assert_eq!(posts[0].1, posts[1].1);
+    assert!(!path.exists());
+  }
+  // Correcting the local clock must not quarantine an otherwise valid future
+  // interval. No HTTP request is needed until its recorded end time passes.
+  let server = Server::new(vec![]);
+  let mut fixture = Fixture::new(&server);
+  let path = fixture.queue("01", 0.447);
+  let mut session: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+  session["ended_at"] = json!(Timestamp::from_second(Timestamp::now().as_second() + 90).unwrap());
+  let original = session.to_string();
+  fs::write(&path, &original).unwrap();
+  let message = fixture.sync().unwrap_err().to_string();
+  assert!(message.contains("Check the Kobo clock"), "{message}");
+  // The wait is given as a readable UTC time, not a raw RFC 3339 timestamp.
+  let end = session["ended_at"].as_str().unwrap().parse::<Timestamp>().unwrap();
+  let readable = end.strftime("%Y-%m-%d %H:%M:%S UTC").to_string();
+  assert!(message.contains(&readable), "{message}");
+  assert_eq!(fs::read_to_string(path).unwrap(), original);
+  assert!(server.requests().is_empty());
+}
+
+#[test]
+fn corrupt_and_invalid_sessions_are_named_and_marked_without_skipping_them() {
+  for corrupt in [false, true] {
+    let server = Server::new(vec![]);
+    let mut fixture = Fixture::new(&server);
+    let path = fixture.queue("20261112000000000-{corrupt}", 0.412);
+    if corrupt {
+      fs::write(&path, "{\"content_id\":\"kobo-hobbit\",\"title\":\"The Ho").unwrap();
+    }
+    let original = fs::read(&path).unwrap();
+    let newer = fixture.queue("20261113000000000-valid", 0.8);
+    let message = fixture.sync().unwrap_err().to_string();
+    // Named as seen over USB, with the reason, not by its absolute path.
+    let name = "readwise-sessions/20261112000000000-{corrupt}.failed";
+    assert!(message.contains(&format!("session {name} is invalid")), "{message}");
+    assert!(!message.contains(path.parent().unwrap().to_str().unwrap()), "{message}");
+    let reason = if corrupt {
+      "the file is incomplete or damaged"
+    } else {
+      "it records no reading progress"
+    };
+    assert!(message.contains(reason), "{message}");
+    assert!(!path.exists());
+    assert_eq!(fs::read(path.with_extension("failed")).unwrap(), original);
+    assert!(newer.exists());
+    let message = fixture.sync().unwrap_err().to_string();
+    assert!(message.contains("Readwise uploads are paused"), "{message}");
+    assert!(message.contains(name), "{message}");
+    assert!(server.requests().is_empty());
+  }
+}
+
+#[test]
+fn deleted_books_are_not_restored_by_pending_or_acknowledged_sessions() {
+  for acknowledged in [true, false] {
+    let mut responses = vec![
+      (
+        200,
+        json!({"results": [{"id": 4790033, "status": "deleted"}]}).to_string(),
+      ),
+      reading_book(),
+    ];
+    if !acknowledged {
+      responses.extend([created_session(), reading_book()]);
+    }
+    responses.push(updated_book());
+    let server = Server::new(responses);
+    let mut fixture = Fixture::new(&server);
+    let path = fixture.queue("01", 0.8);
+    let mut session: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    session["linked_id"] = json!(4790033);
+    session["book_id"] = json!(4790033);
+    fs::write(&path, session.to_string()).unwrap();
+    let path = if acknowledged {
+      let sent = path.with_extension("sent");
+      fs::rename(path, &sent).unwrap();
+      sent
+    } else {
+      path
+    };
+    let result = fixture.sync();
+    let requests = server.requests();
+    assert_eq!(
+      requests.len(),
+      1,
+      "no session POST or shelf PATCH for a deleted book: {requests:?}"
+    );
+    assert!(
+      requests[0].0.starts_with("GET "),
+      "must check shelf before writing: {requests:?}"
+    );
+    assert!(result.unwrap_err().to_string().contains("deleted"));
+    assert!(path.exists());
+    // Once the user restores the shelf, resume without replaying a .sent.
+    fixture.sync().unwrap();
+    assert!(!path.exists());
+    let posts = server
+      .requests()
+      .iter()
+      .filter(|r| r.0 == "POST /books/api/v1/sessions HTTP/1.1")
+      .count();
+    assert_eq!(posts, usize::from(!acknowledged));
+  }
+}
+
+#[test]
+fn books_and_highlights_rate_limits_are_independent_and_persistent() {
+  let request = |client: &Client, path: &str| {
+    if path == HIGHLIGHTS {
+      client.request(
+        "POST",
+        path,
+        Some(json!({"highlights": [{"text": "Test highlight", "title": "Test book"}]})),
+      )
+    } else {
+      client.request("GET", path, None)
+    }
+  };
+  for (limited, other) in [(HIGHLIGHTS, "/books?limit=1"), ("/books?limit=1", HIGHLIGHTS)] {
+    let server = Server::new(vec![(429, "{}".into()), (200, "{}".into())]);
+    let fixture = Fixture::new(&server);
+    // Preserve an outstanding Retry-After across upgrades; its API is unknown.
+    let legacy = fixture.client.directory.join("readwise-retry-at");
+    fs::write(&legacy, (Timestamp::now().as_second() + 60).to_string()).unwrap();
+    assert!(request(&fixture.client, limited).is_err());
+    assert!(request(&fixture.client, other).is_err());
+    assert!(server.requests().is_empty());
+    fs::write(&legacy, "0").unwrap();
+    assert!(request(&fixture.client, limited).is_err());
+    // Recreate the client: the deadline must survive separate CLI processes.
+    let mut next = Client::new(&fixture.context).unwrap();
+    next.base.clone_from(&server.base);
+    next.directory.clone_from(&fixture.client.directory);
+    assert!(request(&next, other).is_ok(), "429 on {limited} blocked {other}");
+    assert!(request(&next, limited).is_err());
+    assert_eq!(server.requests().len(), 2);
+  }
+}
+
+#[test]
+fn readwise_update_errors_do_not_offer_hardcover_linking_or_hide_auth_failures() {
+  use argh::FromArgs;
+  let server = Server::new(vec![(200, json!({"results": []}).to_string())]);
+  let mut fixture = Fixture::new(&server);
+  let error = fixture.client.book(4790033).unwrap_err();
+  let mapped = sync_error(&error, None);
+  assert_eq!(
+    mapped.downcast_ref::<ExpectedError>().unwrap().as_ref(),
+    "ReadwiseBookNotFound"
+  );
+  let message = mapped.to_string();
+  // Nickel already titles this dialog "Readwise Books".
+  assert!(
+    message.starts_with("Readwise library book 4790033 not found"),
+    "{message}"
+  );
+  fixture.context.config.provider = "dual".into();
+  fixture.context.config.readwise_token.clear();
+  let args = crate::commands::update::Update::from_args(
+    &["update"],
+    &["--content-id", "book", "--linked-id", "123", "--value", "54"],
+  )
+  .unwrap();
+  let error = crate::commands::update::run(&mut fixture.context, &args).unwrap_err();
+  assert_eq!(error.downcast_ref::<ExpectedError>().unwrap().as_ref(), "ReadwiseAuth");
+  assert!(error.to_string().contains("Hardcover: Unauthorized"));
+  assert!(error.to_string().contains("readwise_token"));
+  assert!(message.contains("provider=readwise"), "{message}");
+  assert!(!message.contains("Unlink it"));
+  let args = crate::commands::update::Update::from_args(
+    &["update"],
+    &["--service", "readwise", "--content-id", "book", "--value", "54"],
+  )
+  .unwrap();
+  let error = crate::commands::update::run(&mut fixture.context, &args).unwrap_err();
+  assert_eq!(error.downcast_ref::<ExpectedError>().unwrap().as_ref(), "ReadwiseAuth");
+  assert!(!error.to_string().contains("Hardcover:"));
+  // Exercise real HTTP failures through the same mapper used by update, not
+  // just the missing-token check. Retain both services' messages in dual mode.
+  for (status, code) in [
+    (401, "ReadwiseAuth"),
+    (403, "ReadwiseAuth"),
+    (429, "ReadwiseSync"),
+    (500, "ReadwiseSync"),
+  ] {
+    let server = Server::new(vec![created_book(), (status, "{}".into())]);
+    let mut fixture = Fixture::new(&server);
+    fixture.queue("01", 0.8);
+    let error = fixture.sync().unwrap_err();
+    let mapped = sync_error(&error, Some("Hardcover: OK; Readwise Books"));
+    assert_eq!(mapped.downcast_ref::<ExpectedError>().unwrap().as_ref(), code);
+    assert!(mapped.to_string().contains("Hardcover: OK; Readwise Books:"));
+    assert!(mapped.to_string().contains("POST /sessions"));
+    if status == 401 {
+      assert!(mapped.to_string().contains("Readwise token is invalid"));
+    }
+  }
+}
+
 #[test]
 fn sync_preserves_real_times_fractions_and_privacy_and_never_replays_accepted_sessions() {
   for provider in ["readwise", "dual"] {
     let server = Server::new(vec![
       created_book(),
       created_session(),
+      reading_book(),
       (500, "{}".into()),
+      reading_book(),
       updated_book(),
       (200, json!({"results": [{"id": 4_790_033}]}).to_string()),
       created_session(),
+      reading_book(),
       updated_book(),
     ]);
     let mut fixture = Fixture::new(&server);
@@ -194,7 +477,7 @@ fn sync_preserves_real_times_fractions_and_privacy_and_never_replays_accepted_se
     fs::write(&path, session.to_string()).unwrap();
     fixture.sync().unwrap();
     let requests = server.requests();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 10);
     assert_eq!(
       requests[0],
       (
@@ -216,24 +499,24 @@ fn sync_preserves_real_times_fractions_and_privacy_and_never_replays_accepted_se
         }]})
       )
     );
-    assert_eq!(requests[2].0, "PATCH /books/api/v1/books HTTP/1.1");
+    assert_eq!(requests[3].0, "PATCH /books/api/v1/books HTTP/1.1");
     assert_eq!(
-      requests[3].1,
+      requests[5].1,
       json!({"items": [{"id": 4790033, "status": "currently_reading"}]})
     );
     assert_eq!(
-      requests[4],
+      requests[6],
       ("GET /books/api/v1/books?ids=4790033 HTTP/1.1".into(), Value::Null)
     );
-    assert_eq!(requests[5].0, "POST /books/api/v1/sessions HTTP/1.1");
-    assert_eq!(requests[5].1["items"][0]["book_id"], 4_790_033);
-    assert_eq!(requests[5].1["items"][0]["publish_to_feed"], true);
+    assert_eq!(requests[7].0, "POST /books/api/v1/sessions HTTP/1.1");
+    assert_eq!(requests[7].1["items"][0]["book_id"], 4_790_033);
+    assert_eq!(requests[7].1["items"][0]["publish_to_feed"], true);
     assert_eq!(
-      requests[5].1["items"][0]["device"],
+      requests[7].1["items"][0]["device"],
       json!({"type": "E-Reader", "vendor": "Kobo", "model": "Kobo Libra Colour"})
     );
     assert_eq!(
-      requests[6].1,
+      requests[9].1,
       json!({"items": [{"id": 4790033, "status": "finished", "finished_reading_at": "2026-09-10T20:58:35Z"}]})
     );
     assert_eq!(
@@ -255,10 +538,12 @@ fn cached_book_must_be_verified_before_sending_and_failed_checks_keep_the_sessio
     let server = Server::new(vec![
       created_book(),
       created_session(),
+      reading_book(),
       updated_book(),
       response,
       (200, json!({"results": [{"id": 4_790_033}]}).to_string()),
       created_session(),
+      reading_book(),
       updated_book(),
     ]);
     let mut fixture = Fixture::new(&server);
@@ -269,21 +554,21 @@ fn cached_book_must_be_verified_before_sending_and_failed_checks_keep_the_sessio
     assert!(path.exists());
     assert!(!path.with_extension("sending").exists());
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     assert_eq!(
-      requests[3],
+      requests[4],
       ("GET /books/api/v1/books?ids=4790033 HTTP/1.1".into(), Value::Null)
     );
 
     fixture.sync().unwrap();
     assert!(!path.exists());
     let requests = server.requests();
-    assert_eq!(requests.len(), 7);
-    assert_eq!(requests[4].0, "GET /books/api/v1/books?ids=4790033 HTTP/1.1");
-    assert_eq!(requests[5].0, "POST /books/api/v1/sessions HTTP/1.1");
-    assert_eq!(requests[5].1["items"][0]["book_id"], 4_790_033);
-    assert_eq!(requests[5].1["items"][0]["percent_at_end"], 0.8);
-    assert_eq!(requests[6].0, "PATCH /books/api/v1/books HTTP/1.1");
+    assert_eq!(requests.len(), 9);
+    assert_eq!(requests[5].0, "GET /books/api/v1/books?ids=4790033 HTTP/1.1");
+    assert_eq!(requests[6].0, "POST /books/api/v1/sessions HTTP/1.1");
+    assert_eq!(requests[6].1["items"][0]["book_id"], 4_790_033);
+    assert_eq!(requests[6].1["items"][0]["percent_at_end"], 0.8);
+    assert_eq!(requests[8].0, "PATCH /books/api/v1/books HTTP/1.1");
   }
 }
 
@@ -291,6 +576,11 @@ fn cached_book_must_be_verified_before_sending_and_failed_checks_keep_the_sessio
 fn ambiguous_session_outcomes_block_replay_and_newer_sessions() {
   for response in [
     (500, "{}".into()),
+    // Even a body mentioning future times cannot prove rejection on HTTP 500.
+    (
+      500,
+      json!({"error": {"code": "invalid_value", "message": "Session times must not be in the future"}}).to_string(),
+    ),
     (0, String::new()),
     (200, "not-json".into()),
     (200, "{\"results\":[]}".into()),
@@ -365,8 +655,14 @@ fn invalid_session_and_concurrent_sync_do_not_write_remotely() {
   let server = Server::new(vec![]);
   let mut fixture = Fixture::new(&server);
   let path = fixture.queue("01", 44.7);
-  assert!(fixture.sync().unwrap_err().to_string().contains("Invalid queued"));
-  fs::remove_file(path).unwrap();
+  assert!(
+    fixture
+      .sync()
+      .unwrap_err()
+      .to_string()
+      .contains("its progress is outside 0 to 100%")
+  );
+  fs::remove_file(path.with_extension("failed")).unwrap();
   fixture.queue("01", 0.447);
   let lock = fs::File::options()
     .write(true)

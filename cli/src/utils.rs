@@ -47,12 +47,20 @@ pub enum ExpectedError {
   BookNotFound(String),
   #[error("Exceeded daily rate limit. Please try again tomorrow.")]
   DailyRateLimit,
+  #[error("{0}")]
+  Network(String),
   #[error("Sign-in failed, please try again.<br><br>>{0}")]
   OAuth(String),
   #[error("Unauthorized")]
   Unauthorized,
   #[error("{0}")]
   InvalidConfig(String),
+  #[error("{0}")]
+  ReadwiseAuth(String),
+  #[error("{0}")]
+  ReadwiseBookNotFound(String),
+  #[error("{0}")]
+  ReadwiseSync(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
