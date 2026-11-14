@@ -49,6 +49,8 @@ private:
   int currentProgress = 0;
 
   QHash<QString, int> progress;
+  QHash<QString, int> initialProgress;
   QSet<QString> queue;
+  QSet<QString> manualQueue;
   QSet<QString> retryQueue;
 };

@@ -169,9 +169,7 @@ void CLI::connectingFailed() {
   networkFinished = true;
   nh_log("CLI::connectingFailed()");
 
-  if (!silent) {
-    showBookErrorDialog(contentId, "Failed to connect to WIFI.");
-  }
+  showError("Failed to connect to WIFI.");
 
   if (timer != nullptr) {
     timer->stop();
@@ -218,8 +216,31 @@ void CLI::networkConnected() {
   }
 
   QProcess *process = new QProcess(this);
-  process->start(Files::cli, arguments);
   QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &CLI::processFinished);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 6, 0)
+  QObject::connect(process, &QProcess::errorOccurred, this, &CLI::processError);
+#else
+  // Kobo ships Qt 5.2.1.
+  QObject::connect(process, static_cast<void (QProcess::*)(QProcess::ProcessError)>(&QProcess::error), this,
+                   &CLI::processError);
+#endif
+  process->start(Files::cli, arguments);
+}
+
+void CLI::showError(const QString &message) {
+  if (!silent)
+    ConfirmationDialogFactory__showErrorDialog(readwise ? "Readwise Books" : "Hardcover.app",
+                                               describeBookError(contentId, message));
+}
+
+void CLI::processError(QProcess::ProcessError error) {
+  // Crashes also emit finished; handle them there to signal failure only once.
+  if (error != QProcess::FailedToStart)
+    return;
+  nh_log("Could not start the command line executable");
+  showError("Cannot start the sync program. Check the plugin installation and try again.");
+  failure(FailureReason::Error);
+  deleteLater();
 }
 
 void CLI::processFinished(int exitCode) {
@@ -243,7 +264,8 @@ void CLI::processFinished(int exitCode) {
 
     case Messages::Kind::Error:
       if (msg.error->error_code == "Unauthorized") {
-        SignInDialog::show(readwise);
+        if (!silent)
+          SignInDialog::show(readwise);
         failure(FailureReason::Unauthorized);
         deleteLater();
         return;
@@ -251,10 +273,15 @@ void CLI::processFinished(int exitCode) {
         QString message = msg.error->message;
         nh_log("%s", qPrintable(message));
 
+        if (silent) {
+          failure(FailureReason::BookNotFound);
+          deleteLater();
+          return;
+        }
         ConfirmationDialog *dialog = ConfirmationDialogFactory__getConfirmationDialog(nullptr);
         ConfirmationDialog__setAcceptButtonText(dialog, "Reset");
         ConfirmationDialog__setRejectButtonText(dialog, "Not now");
-        ConfirmationDialog__setTitle(dialog, "Hardcover.app");
+        ConfirmationDialog__setTitle(dialog, readwise ? "Readwise Books" : "Hardcover.app");
         ConfirmationDialog__setText(dialog, message);
 
         QObject::connect(dialog, &QDialog::accepted, this, &CLI::deleteConfig);
@@ -267,11 +294,19 @@ void CLI::processFinished(int exitCode) {
         QString message = msg.error->message;
         nh_log("%s", qPrintable(message));
 
+        // The link/unlink UI follows the primary provider, which is Hardcover
+        // in dual mode. Never offer it for a Readwise command in that mode.
+        if (silent || (readwise && Settings::getInstance()->isDual())) {
+          showError(message);
+          failure(FailureReason::BookNotFound);
+          deleteLater();
+          return;
+        }
         ConfirmationDialog *dialog = ConfirmationDialogFactory__getConfirmationDialog(nullptr);
         ConfirmationDialog__setAcceptButtonText(
             dialog, Settings::getInstance()->getLinkedId(contentId).isEmpty() ? "Link book" : "Unlink book");
         ConfirmationDialog__setRejectButtonText(dialog, "Cancel");
-        ConfirmationDialog__setTitle(dialog, "Hardcover.app");
+        ConfirmationDialog__setTitle(dialog, readwise ? "Readwise Books" : "Hardcover.app");
         ConfirmationDialog__setText(dialog, describeBookError(contentId, message));
 
         QObject::connect(dialog, &QDialog::accepted, this, &CLI::linkBook);
@@ -282,8 +317,8 @@ void CLI::processFinished(int exitCode) {
         return;
       } else {
         nh_log("Error from command line \"%s\"", qPrintable(msg.error->message));
-        showBookErrorDialog(contentId, msg.error->message);
-        failure(FailureReason::Error);
+        showError(msg.error->message);
+        failure(msg.error->error_code == "Network" ? FailureReason::Network : FailureReason::Error);
         deleteLater();
         return;
       }
@@ -300,7 +335,7 @@ void CLI::processFinished(int exitCode) {
   if (exitCode == 0) {
     success();
   } else {
-    showBookErrorDialog(contentId, "Encountered an unexpected error. Please report this.");
+    showError("Encountered an unexpected error. Please report this.");
     failure(FailureReason::Error);
   }
 

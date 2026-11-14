@@ -6,9 +6,12 @@
 #include "src/synccontroller.h"
 #include <QApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QJsonDocument>
+#include <QPointer>
 #include <QThread>
+#include <QTimer>
 #include <cassert>
 #include <iostream>
 
@@ -26,6 +29,7 @@ static Wireless wireless;
 static QWidget *view;
 static int percentage;
 static CLI *pending[2] = {};
+static bool pendingSilent[2] = {};
 
 extern "C" void nh_log(const char *, ...) {}
 MainWindowController *(*MainWindowController__sharedInstance)() = []() -> QObject * { return &wireless; };
@@ -49,8 +53,9 @@ CLI::CLI(QStringList, bool, bool, const QString &, QObject *parent) : QObject(pa
 CLI::~CLI() = default;
 void CLI::networkConnected() {}
 void CLI::connectingFailed() {}
-CLI *CLI::update(const QString &, int, bool, bool readwise) {
+CLI *CLI::update(const QString &, int, bool silent, bool readwise) {
   assert(!pending[readwise]);
+  pendingSilent[readwise] = silent;
   return pending[readwise] = new CLI({});
 }
 static void complete(bool readwise, bool success, CLI::FailureReason reason = CLI::Error) {
@@ -87,6 +92,54 @@ int main(int argc, char **argv) {
   auto ctl = SyncController::getInstance();
   auto settings = Settings::getInstance();
   ctl->notRealBook = false;
+  for (const QString &scenario : {QString("first-page"), QString("deferred-manual"), QString("anonymous-drain")}) {
+    SyncQueue queue(true);
+    if (scenario == "first-page") {
+      for (bool readwise : {false, true}) {
+        SyncQueue first(readwise);
+        percentage = 48;
+        first.updateReadProgress("fresh");
+        percentage = 49;
+        first.updateReadProgress("fresh");
+        assert(!first.checkThreshold("fresh", 20));
+        percentage = 67;
+        first.updateReadProgress("fresh");
+        assert(!first.checkThreshold("fresh", 20));
+        percentage = 68;
+        first.updateReadProgress("fresh");
+        assert(first.checkThreshold("fresh", 20));
+        settings->setLastProgress("fresh", 0, readwise);
+        assert(first.checkThreshold("fresh", 50)); // A real saved zero is not an absent baseline.
+      }
+    } else if (scenario == "deferred-manual") {
+      percentage = 42;
+      queue.updateReadProgress("busy");
+      queue.run("busy");
+      assert(pendingSilent[true]);
+      queue.run("busy", true);
+      assert(QApplication::activeModalWidget());
+      complete(true, true);
+      assert(!pendingSilent[true]);
+      QPointer<QWidget> deferredDialog = QApplication::activeModalWidget();
+      QEventLoop loop;
+      QTimer::singleShot(900, &loop, SLOT(quit()));
+      loop.exec();
+      // The previous request's 800ms success timer must not close this dialog.
+      assert(deferredDialog && deferredDialog->isVisible());
+      complete(true, true);
+    } else if (scenario == "anonymous-drain") {
+      percentage = 43;
+      queue.updateReadProgress("offline");
+      queue.run("offline");
+      complete(true, false, CLI::Network);
+      queue.runAll();
+      complete(true, true);
+      // A successful anonymous drain cannot acknowledge an active interval.
+      assert(settings->getLastProgress("offline", true) == 0);
+      assert(queue.getProgress().value("offline") == 43);
+    }
+    std::cout << qPrintable(scenario) << " OK\n";
+  }
   ctl->contentId = "book";
   ctl->registerBook("book", "Title", "Author");
   assert(settings->getLinkedId("book") == "123");
@@ -110,6 +163,10 @@ int main(int argc, char **argv) {
   assert(!ctl->isEnabled());
   complete(false, false);
   assert(ctl->isEnabled()); // The available service remains usable while the other runs.
+  assert(ctl->getProgress(false).isEmpty());
+  assert(ctl->getProgress(true).value("book") == 54);
+  ctl->clearReadProgress("book");
+  assert(ctl->getProgress(true).value("book") == 54); // Clearing Hardcover never discards Readwise.
   complete(true, true);
   assert(settings->getLastProgress("book", false) == 10);
   assert(settings->getLastProgress("book", true) == 54);

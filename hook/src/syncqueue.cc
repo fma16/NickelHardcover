@@ -1,4 +1,5 @@
 #include <QDir>
+#include <QPointer>
 #include <QSettings>
 #include <QTimer>
 
@@ -30,6 +31,9 @@ void SyncQueue::updateReadProgress(const QString &contentId) {
     newProgress = 100;
   }
 
+  if (!initialProgress.contains(contentId))
+    initialProgress.insert(contentId, newProgress);
+
   if ((!readwise && newProgress < 2) || newProgress == progress.value(contentId)) {
     return;
   }
@@ -41,7 +45,8 @@ void SyncQueue::updateReadProgress(const QString &contentId) {
 
 bool SyncQueue::checkThreshold(const QString &contentId, int threshold) const {
   return threshold > 0 && progress.value(contentId) > 0 &&
-         abs(Settings::getInstance()->getLastProgress(contentId, readwise) - progress.value(contentId)) >= threshold;
+         abs(Settings::getInstance()->getLastProgress(contentId, readwise, initialProgress.value(contentId)) -
+             progress.value(contentId)) >= threshold;
 }
 
 void SyncQueue::networkConnected() {
@@ -91,7 +96,7 @@ void SyncQueue::prepareNext() {
     queue.remove(contentId);
 
     nh_log("Syncing %s", qPrintable(contentId));
-    run(contentId);
+    run(contentId, manualQueue.remove(contentId));
   }
 }
 
@@ -101,7 +106,18 @@ void SyncQueue::run(const QString &contentId, bool manual) {
   if (running) {
     // A deferred Readwise drain must not acknowledge progress from an interval
     // that may still be active when the previous request completes.
-    queue.insert(readwise ? QString() : contentId);
+    QString queuedId = readwise ? QString() : contentId;
+    queue.insert(queuedId);
+    if (manual) {
+      manualQueue.insert(queuedId);
+      if (dialog == nullptr) {
+        dialog = ConfirmationDialogFactory__getConfirmationDialog(nullptr);
+        ConfirmationDialog__showCloseButton(dialog, false);
+        ConfirmationDialog__setText(dialog, readwise ? "Readwise Books: waiting for the current sync..."
+                                                     : "Hardcover.app: waiting for the current sync...");
+        dialog->open();
+      }
+    }
     QObject::connect(this, &SyncQueue::finished, this, &SyncQueue::prepareNext, Qt::UniqueConnection);
     return;
   }
@@ -149,7 +165,11 @@ void SyncQueue::success() {
 
   if (dialog != nullptr) {
     ConfirmationDialog__setText(dialog, readwise ? "Readwise Books: success!" : "Hardcover.app: success!");
-    QTimer::singleShot(800, this, &SyncQueue::closeDialog);
+    QPointer<ConfirmationDialog> completedDialog = dialog;
+    QTimer::singleShot(800, this, [this, completedDialog] {
+      if (completedDialog && dialog == completedDialog)
+        closeDialog();
+    });
   }
   finished();
 }

@@ -32,8 +32,8 @@ public:
     setValue(contentId, "progress", value, readwise);
   }
   int getLastProgress(const QString &contentId) const { return getLastProgress(contentId, isReadwise()); }
-  int getLastProgress(const QString &contentId, bool readwise) const {
-    return getValue(contentId, "progress", readwise).toInt();
+  int getLastProgress(const QString &contentId, bool readwise, int defaultValue = 0) const {
+    return getValue(contentId, "progress", readwise, defaultValue).toInt();
   }
 
   // In dual mode the book-management UI retains the complete Hardcover feature set.

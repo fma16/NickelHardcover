@@ -107,7 +107,7 @@ void ReviewDialog::response(const Messages &message) {
   TouchTextEdit *touchText = construct_TouchTextEdit(this);
   TouchTextEdit__setCustomPlaceholderText(touchText, Settings::getInstance()->isReadwise()
     ? "Write your review for Readwise Books."
-    : "Share you thoughts about this book with the world. Make sure to Mark any spoilers!");
+    : "Share your thoughts about this book with the world. Make sure to Mark any spoilers!");
   QTextEdit *textEdit = touchText->findChild<QTextEdit *>();
   textEdit->setText(message.user_book->review_raw.value_or_default());
   column->addWidget(touchText);

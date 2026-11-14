@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QObject>
+#include <QProcess>
 #include <QStringList>
 
 #include "messages.h"
@@ -46,6 +47,8 @@ private:
 
   void checkConnected();
   void processFinished(int errorCode);
+  void processError(QProcess::ProcessError error);
+  void showError(const QString &message);
   void linkBook();
   void deleteConfig();
 

@@ -363,33 +363,37 @@ QFrame *SettingsDialog::buildQueuedProgress() {
   layout->setContentsMargins(0, 0, 0, 0);
 
   SyncController *ctl = SyncController::getInstance();
-  const QHash<QString, int> &progress = ctl->getProgress();
+  Settings *settings = Settings::getInstance();
+  for (bool readwise : {false, true}) {
+    const QHash<QString, int> &progress = ctl->getProgress(readwise);
+    if (!settings->usesService(readwise) || progress.isEmpty())
+      continue;
 
-  if (progress.isEmpty()) {
-    return frame;
-  }
-
-  layout->addWidget(new Label(Label::Avenir, "Queued progress"));
-
-  for (QHash<QString, int>::const_iterator it = progress.constBegin(); it != progress.constEnd(); ++it) {
-    QString contentId = it.key();
-    QString title = ctl->getBookInfo(contentId).title;
-
-    int lastSynced = Settings::getInstance()->getLastProgress(contentId);
-    QString value = lastSynced <= 0 ? QString("%1% • never synced").arg(it.value())
-                                    : QString("%1% • last synced %2%").arg(it.value()).arg(lastSynced);
-
-    StaticRow *row = new StaticRow(title.isEmpty() ? "Unknown" : title, value, true);
-    QObject::connect(row, &StaticRow::clear, this, [contentId, row]() {
-      SyncController::getInstance()->clearReadProgress(contentId);
-      row->deleteLater();
-    });
-
-    if (it == progress.constBegin()) {
-      row->setProperty("noBorder", true);
+    layout->addWidget(new Label(Label::Avenir, readwise ? "Readwise progress" : "Hardcover queued progress"));
+    if (readwise) {
+      Label *note = new Label(Label::Small, "Saved Readwise sessions are kept separately and are not cleared here.");
+      note->setWordWrap(true);
+      layout->addWidget(note);
     }
 
-    layout->addWidget(row);
+    for (QHash<QString, int>::const_iterator it = progress.constBegin(); it != progress.constEnd(); ++it) {
+      QString contentId = it.key();
+      QString title = ctl->getBookInfo(contentId).title;
+      int lastSynced = settings->getLastProgress(contentId, readwise, -1);
+      QString value = lastSynced < 0 ? QString("%1% • never synced").arg(it.value())
+                                     : QString("%1% • last synced %2%").arg(it.value()).arg(lastSynced);
+
+      StaticRow *row = new StaticRow(title.isEmpty() ? "Unknown" : title, value, !readwise);
+      if (!readwise) {
+        QObject::connect(row, &StaticRow::clear, this, [contentId, row]() {
+          SyncController::getInstance()->clearReadProgress(contentId);
+          row->deleteLater();
+        });
+      }
+      if (it == progress.constBegin())
+        row->setProperty("noBorder", true);
+      layout->addWidget(row);
+    }
   }
 
   return frame;
