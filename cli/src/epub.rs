@@ -513,26 +513,26 @@ mod tests {
         format!("{error:#}").contains("EPUB decompression limit"),
         "{name}: {error:#}"
       );
-      // A forged small uncompressed size must not bypass the actual read cap.
-      let headers: Vec<_> = bytes
-        .windows(4)
-        .enumerate()
-        .filter_map(|(i, signature)| {
-          match signature {
-            b"PK\x03\x04" => Some(i + 22), // local uncompressed size
-            b"PK\x01\x02" => Some(i + 24), // central-directory uncompressed size
-            _ => None,
-          }
-        })
-        .collect();
-      for offset in headers {
+      // Forge only this entry so earlier entries cannot mask its rejection.
+      let size_offsets = {
+        let mut archive = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let entry = archive.by_name(name).unwrap();
+        [
+          entry.header_start() as usize + 22,         // local uncompressed size
+          entry.central_header_start() as usize + 24, // central-directory uncompressed size
+        ]
+      };
+      for offset in size_offsets {
         bytes[offset..offset + 4].copy_from_slice(&1_u32.to_le_bytes());
       }
       let file = TempFile::new(&bytes);
       let error = read_epub_isbn(&file.content_id()).unwrap_err();
+      let message = format!("{error:#}");
+      // Either our read cap or zip's earlier declared-size check must reject it.
       assert!(
-        format!("{error:#}").contains("EPUB decompression limit"),
-        "forged {name}: {error:#}"
+        message.contains("EPUB decompression limit")
+          || message.contains("File is larger than its declared uncompressed size"),
+        "forged {name}: {message}"
       );
     }
 
